@@ -2,9 +2,7 @@ import urllib.request
 import urllib.parse
 import json
 
-# get the location of the city
-# if the city is not found, return the closest city
-# return structured data like latitude, longitude, timezone, country, name
+
 def get_location(city: str) -> dict:
     """
     Convert city name to lat/lon/timezone using Open-Meteo geocoding API.

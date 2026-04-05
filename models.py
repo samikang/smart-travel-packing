@@ -15,15 +15,15 @@ class DayForecast:
 
 @dataclass
 class TripContext:
-    purpose: str              # "business" | "tourism" | "visiting"
     city: str
     country: str
+    purpose: str = ""         # "business" | "tourism" | "visiting"
 
 
 @dataclass
 class DayRecommendation:
     date: str
     clothing: list = field(default_factory=list)
-    packing: list = field(default_factory=list)
-    alerts: list = field(default_factory=list)
-    summary: str = ""
+    packing: list  = field(default_factory=list)
+    alerts: list   = field(default_factory=list)
+    summary: str   = ""

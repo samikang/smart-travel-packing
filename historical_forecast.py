@@ -15,15 +15,6 @@ Algorithm (unchanged):
   5. UV proxy when satellite records are sparse (< 3 valid years)
   6. Weather code: exponentially weighted mode (categorical)
   7. Physical constraints clamp all values to valid ranges
-
-Prediction method options (pass `method=` to get_historical_forecast):
-  "ewm_ols"   (default) Exponential weighted mean + OLS trend, adaptively blended.
-  "holt_des"  Holt's Double Exponential Smoothing — principled level + trend
-              decomposition with separate smoothing params (alpha, beta).
-  "theil_sen" Theil-Sen estimator — median of all pairwise slopes, robust to
-              outlier years (e.g. El Niño, volcanic winters).
-  "gpr"       Gaussian Process Regression (sklearn Matern kernel) — non-linear
-              trend with built-in noise handling; slowest but most flexible.
 """
 
 import urllib.request
@@ -164,23 +155,30 @@ def _exp_weights(n: int) -> np.ndarray:
     return w / w.sum()
 
 
-def _predict_ewm_ols(y: np.ndarray, v: np.ndarray, target_year: int) -> float:
+def _predict_continuous(years: np.ndarray, values: np.ndarray,
+                        target_year: int) -> float:
     """
     Exponentially weighted mean + OLS linear trend, adaptively blended.
-    y/v sorted most-recent-first, NaNs already removed.
+    years/values must be sorted most-recent-first.
     """
+    mask = ~np.isnan(values)
+    if not mask.any():
+        return 0.0
+    y, v = years[mask], values[mask]
     n = len(v)
+
     w = _exp_weights(n)
     mu_w    = np.average(v, weights=w)
     sigma_w = np.sqrt(np.average((v - mu_w) ** 2, weights=w))
 
     if n >= MIN_OBS_FOR_TREND:
+        # np.polyfit returns [slope, intercept] for degree-1 fit
         slope, intercept = np.polyfit(y.astype(float), v, 1)
         std_v = np.std(v)
         slope = np.clip(slope, -2 * std_v, 2 * std_v)
         x_trend = intercept + slope * target_year
 
-        trend_signal      = abs(slope * 5)
+        trend_signal  = abs(slope * 5)
         trend_reliability = trend_signal / (trend_signal + sigma_w + 1e-9)
         eff_tw = TREND_WEIGHT * min(1.0, trend_reliability)
     else:
@@ -188,115 +186,6 @@ def _predict_ewm_ols(y: np.ndarray, v: np.ndarray, target_year: int) -> float:
         eff_tw  = 0.0
 
     return float((1.0 - eff_tw) * mu_w + eff_tw * x_trend)
-
-
-def _predict_holt_des(y: np.ndarray, v: np.ndarray, target_year: int,
-                      alpha: float = 0.85, beta: float = 0.15) -> float:
-    """
-    Holt's Double Exponential Smoothing.
-    Maintains a level and a trend state, each with its own decay parameter.
-    More principled than ewm_ols for level+trend decomposition.
-    alpha: smoothing for level (high = trust recent observations more)
-    beta:  smoothing for trend (low = smooth out year-to-year slope noise)
-    """
-    n = len(v)
-    if n == 1:
-        return float(v[0])
-
-    # Reverse to chronological order (oldest → newest) for the forward pass
-    v_chron = v[::-1]
-    y_chron = y[::-1]
-
-    level = v_chron[0]
-    trend = v_chron[1] - v_chron[0]
-
-    for val in v_chron[1:]:
-        prev_level = level
-        level = alpha * val + (1.0 - alpha) * (level + trend)
-        trend = beta * (level - prev_level) + (1.0 - beta) * trend
-
-    # Forecast h steps ahead from the last observed year
-    h = target_year - int(y_chron[-1])
-    return float(level + h * trend)
-
-
-def _predict_theil_sen(y: np.ndarray, v: np.ndarray, target_year: int) -> float:
-    """
-    Theil-Sen estimator: slope = median of all pairwise slopes.
-    Robust to outlier years (e.g. El Niño, volcanic winters) — up to ~29%
-    of observations can be outliers without distorting the result.
-    Pure numpy, no extra dependency.
-    """
-    n = len(v)
-    if n == 1:
-        return float(v[0])
-
-    slopes = []
-    for i in range(n):
-        for j in range(i + 1, n):
-            dy = float(y[j] - y[i])
-            if dy != 0:
-                slopes.append((v[j] - v[i]) / dy)
-
-    if not slopes:
-        return float(np.median(v))
-
-    slope     = float(np.median(slopes))
-    intercept = float(np.median(v) - slope * np.median(y))
-    return intercept + slope * target_year
-
-
-def _predict_gpr(y: np.ndarray, v: np.ndarray, target_year: int) -> float:
-    """
-    Gaussian Process Regression with a Matern(nu=1.5) + WhiteKernel.
-    Handles small datasets (5-15 points) without overfitting, and naturally
-    accounts for year-to-year noise via WhiteKernel.
-    Slower (~5-15 ms per call) but most flexible; good for non-linear trends.
-    Requires scikit-learn (already in requirements.txt).
-    """
-    from sklearn.gaussian_process import GaussianProcessRegressor
-    from sklearn.gaussian_process.kernels import Matern, WhiteKernel
-
-    n = len(v)
-    if n == 1:
-        return float(v[0])
-
-    X = y.reshape(-1, 1).astype(float)
-    kernel = Matern(length_scale=5.0, nu=1.5) + WhiteKernel(noise_level=1.0)
-    gpr = GaussianProcessRegressor(
-        kernel=kernel, n_restarts_optimizer=3, normalize_y=True
-    )
-    gpr.fit(X, v)
-    pred, _ = gpr.predict([[float(target_year)]], return_std=True)
-    return float(pred[0])
-
-
-_PREDICT_METHODS = {
-    "ewm_ols":   _predict_ewm_ols,
-    "holt_des":  _predict_holt_des,
-    "theil_sen": _predict_theil_sen,
-    "gpr":       _predict_gpr,
-}
-
-
-def _predict_continuous(years: np.ndarray, values: np.ndarray,
-                        target_year: int,
-                        method: str = "theil_sen") -> float:
-    """
-    Dispatch to the selected prediction method.
-    years/values must be sorted most-recent-first.
-    """
-    mask = ~np.isnan(values)
-    if not mask.any():
-        return 0.0
-    y, v = years[mask], values[mask]
-
-    fn = _PREDICT_METHODS.get(method)
-    if fn is None:
-        raise ValueError(
-            f"Unknown method {method!r}. Choose from: {list(_PREDICT_METHODS)}"
-        )
-    return fn(y, v, target_year)
 
 
 def _predict_code(years: np.ndarray, codes: np.ndarray) -> int:
@@ -321,18 +210,11 @@ def _uv_proxy(lat: float, cloud: float) -> float:
 
 def get_historical_forecast(lat: float, lon: float, timezone: str,
                              start_date: str, end_date: str,
-                             n_years: int = 10,
-                             method: str = "theil_sen") -> list:
+                             n_years: int = 10) -> list:
     """
     Predict daily weather for a future date range from past climate data.
     Uses parquet cache to avoid re-fetching on repeated runs.
     Returns list[DayForecast].
-
-    method: prediction algorithm for continuous variables (temp, precip, etc.)
-      "ewm_ols"   (default) Exponential weighted mean + OLS trend blend
-      "holt_des"  Holt's Double Exponential Smoothing (level + trend)
-      "theil_sen" Theil-Sen robust linear trend (outlier-resistant)
-      "gpr"       Gaussian Process Regression (non-linear, slowest)
     """
     target_start = date.fromisoformat(start_date)
     target_end   = date.fromisoformat(end_date)
@@ -354,17 +236,17 @@ def get_historical_forecast(lat: float, lon: float, timezone: str,
         def col(name):
             return day_df[name].to_numpy(dtype=float) if name in day_df else np.array([np.nan])
 
-        temp_max = _predict_continuous(years, col("temp_max"),         target_year, method)
-        temp_min = _predict_continuous(years, col("temp_min"),         target_year, method)
-        cloud    = _predict_continuous(years, col("cloud_cover_mean"), target_year, method)
-        precip   = _predict_continuous(years, col("precipitation_mm"), target_year, method)
-        wind     = _predict_continuous(years, col("wind_speed_max"),   target_year, method)
+        temp_max = _predict_continuous(years, col("temp_max"),          target_year)
+        temp_min = _predict_continuous(years, col("temp_min"),          target_year)
+        cloud    = _predict_continuous(years, col("cloud_cover_mean"),   target_year)
+        precip   = _predict_continuous(years, col("precipitation_mm"),  target_year)
+        wind     = _predict_continuous(years, col("wind_speed_max"),     target_year)
         code     = _predict_code(years,       col("weather_code"))
 
         uv_vals = col("uv_index_max")
         valid_uv = uv_vals[~np.isnan(uv_vals)]
         if len(valid_uv) >= MIN_OBS_FOR_TREND:
-            uv = _predict_continuous(years, uv_vals, target_year, method)
+            uv = _predict_continuous(years, uv_vals, target_year)
         else:
             uv = _uv_proxy(lat, cloud)
 
