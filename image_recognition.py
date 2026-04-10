@@ -1,60 +1,64 @@
 """
 Image Recognition — Wardrobe Outfit Analyser
 =============================================
-Analyses user-supplied wardrobe photos against the trip weather forecast and
-produces packing advice: which outfits to bring and why.
+Analyses wardrobe photos against the trip weather forecast and produces
+packing advice. Supports three detection backends selectable via --vision:
 
-Two-stage pipeline
-------------------
-1. **Local detection** (YOLOv8 object/classification model, offline, no API key)
-   - Detects the garment category from the image (jacket, shirt, etc.)
-   - Falls back to a simple heuristic colour/shape description if YOLO is
-     unavailable (ultralytics not installed or model file missing).
+  yolo    (default) YOLOv8 local detection — offline, no API key required.
+                    Tries yolov8n-cls.pt (classification) first, then
+                    yolov8n.pt (object detection) as fallback.
 
-2. **Narrative advice** (Google Gemini, optional)
-   - Sends the detected garment label + full clothing narrative for the trip to
-     Gemini 2.5 Flash and returns concise packing advice.
-   - Skipped gracefully if the google-genai package is not installed or
-     GEMINI_API_KEY is not set.
+  google            Google Cloud Vision API — online, needs GOOGLE_VISION_API_KEY
+                    env var. Returns label annotations ranked by confidence.
 
-Usage (called from main.py)
----------------------------
-    from image_recognition import analyse_outfits
-    analyse_outfits(image_paths, recommendations, context)
+  clip              Local CLIP (openai/clip-vit-base-patch32) — offline, no API
+                    key. Compares image embedding against the 37 recommender item
+                    names first; if best score < threshold, falls back to a
+                    broader generic clothing vocabulary.
 
-    image_paths    : list of file paths (str or Path) to wardrobe photos
-    recommendations: list[DayRecommendation] from recommender.py
-    context        : TripContext
+  both              Runs all three backends on every image and displays each
+                    result in a side-by-side comparison table.
 
-Environment
------------
-    GEMINI_API_KEY  — Google Gemini API key (optional; skips LLM step if absent)
+After detection, the garment label is passed to Gemini (optional, needs
+GEMINI_API_KEY) for narrative packing advice. Falls back to rule-based
+advice if Gemini is unavailable.
 
-Model files
------------
-Place YOLOv8 weights in the project root or pass the path explicitly:
-    yolov8n.pt       — object detection  (detects 'person', 'tie', etc.)
-    yolov8n-cls.pt   — classification    (ImageNet classes incl. clothing)
-The module tries the classification model first, then falls back to detection.
+Environment variables
+---------------------
+    GOOGLE_VISION_API_KEY   — Google Cloud Vision API key  (vision=google/both)
+    GEMINI_API_KEY          — Google Gemini API key        (narrative advice)
+
+Model files (place in project root)
+-------------------------------------
+    yolov8n-cls.pt          — YOLOv8 classification weights
+    yolov8n.pt              — YOLOv8 detection weights
+    (CLIP weights auto-downloaded by HuggingFace on first run, ~350MB)
 """
 
+from __future__ import annotations
+
 import os
-import sys
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 
 from models import DayRecommendation, TripContext
+import torch
+from typing import List, Optional, Tuple
 
-# Paths to YOLOv8 weight files (project root, same directory as this file)
+# ── Constants ─────────────────────────────────────────────────────────────────
+
 _HERE         = Path(__file__).parent
 YOLO_CLS_PATH = _HERE / "yolov8n-cls.pt"
 YOLO_DET_PATH = _HERE / "yolov8n.pt"
 
-# Clothing-related ImageNet / COCO class names we care about
-_CLOTHING_CLASSES = {
-    # COCO detection labels
+VALID_VISION_MODES = ("yolo", "google", "clip", "both")
+
+# CLIP: if best recommender-item similarity is below this, use generic vocab
+CLIP_RECOMMENDER_THRESHOLD = 0.20
+
+# YOLO: clothing-related COCO / ImageNet class names
+_YOLO_CLOTHING_CLASSES = {
     "tie", "handbag", "backpack", "umbrella", "suitcase",
-    # ImageNet classification labels (partial — YOLO cls uses top-1 label)
     "jersey", "sweatshirt", "cardigan", "trench coat", "overcoat",
     "suit", "lab coat", "jean", "shorts", "miniskirt",
     "raincoat", "poncho", "hooded jacket", "anorak", "parka",
@@ -62,194 +66,321 @@ _CLOTHING_CLASSES = {
     "running shoe", "loafer", "boot",
 }
 
+# CLIP: broad clothing vocabulary used when recommender match is weak
+_CLIP_GENERIC_VOCAB = [
+    "t-shirt", "shirt", "blouse", "polo shirt", "tank top",
+    "sweater", "hoodie", "sweatshirt", "fleece jacket", "cardigan",
+    "jacket", "blazer", "suit jacket", "raincoat", "windbreaker",
+    "winter coat", "down jacket", "parka", "trench coat",
+    "trousers", "jeans", "shorts", "skirt", "dress",
+    "formal wear", "business attire",
+    "sneakers", "running shoes", "boots", "formal shoes", "sandals",
+    "hat", "scarf", "gloves", "umbrella", "backpack",
+]
 
-# ── Stage 1: Local garment detection ─────────────────────────────────────────
 
-def _detect_with_yolo(image_path: Path) -> str:
+# ── Backend 1: YOLOv8 ─────────────────────────────────────────────────────────
+
+def _detect_yolo(image_path: Path) -> str:
     """
-    Run YOLOv8 on a single image and return a human-readable garment label.
-    Tries classification model first (more clothing-aware), then detection.
-    Returns a plain-English description string.
+    Run YOLOv8 on a single image.
+    Tries classification model first (clothing-aware ImageNet labels),
+    then detection model (COCO labels), then filename fallback.
     """
     try:
         from ultralytics import YOLO
     except ImportError:
-        return _fallback_description(image_path)
+        return _filename_fallback(image_path, note="ultralytics not installed")
 
-    # ── Try classification model ──────────────────────────────────────────────
+    # ── Classification model ──────────────────────────────────────────────────
     if YOLO_CLS_PATH.exists():
         try:
             model  = YOLO(str(YOLO_CLS_PATH))
+            # 1. Load the model
+            #model = YOLO("openai/clip-vit-base-patch32") 
+    
+            # 2. FORCE IT TO CPU (Add this line right after loading)
+            model.to('cpu') 
+    
             result = model(str(image_path), verbose=False)[0]
+            print("Enter -3")
             top1   = result.names[result.probs.top1]
             conf   = float(result.probs.top1conf)
-            return f"{top1} (classification confidence {conf:.0%})"
+            return f"{top1} (YOLOv8-cls, confidence {conf:.0%})"
         except Exception:
             pass
 
-    # ── Fallback: detection model ─────────────────────────────────────────────
+    # ── Detection model ───────────────────────────────────────────────────────
+    print( str(YOLO_DET_PATH.exists()))
     if YOLO_DET_PATH.exists():
         try:
-            model   = YOLO(str(YOLO_DET_PATH))
-            result  = model(str(image_path), verbose=False)[0]
-            boxes   = result.boxes
+            model  = YOLO(str(YOLO_DET_PATH))
+            result = model(str(image_path), verbose=False)[0]
+            boxes  = result.boxes
             if boxes is not None and len(boxes):
-                labels = [result.names[int(c)] for c in boxes.cls]
-                # Prefer clothing-related labels; fall back to highest-confidence box
-                clothing = [l for l in labels if l.lower() in _CLOTHING_CLASSES]
+                labels   = [result.names[int(c)] for c in boxes.cls]
+                clothing = [l for l in labels if l.lower() in _YOLO_CLOTHING_CLASSES]
                 chosen   = clothing[0] if clothing else labels[0]
-                return f"{chosen} (detection)"
+                return f"{chosen} (YOLOv8-det)"
         except Exception:
             pass
 
-    return _fallback_description(image_path)
+    return _filename_fallback(image_path, note="no YOLO model found")
 
 
-def _fallback_description(image_path: Path) -> str:
+# ── Backend 2: Google Cloud Vision API ───────────────────────────────────────
+
+def _detect_google_vision(image_path: Path) -> str:
     """
-    Minimal description when YOLO is unavailable.
-    Returns the filename stem as a best-effort label.
+    Call Google Cloud Vision API label + object detection.
+    Filters results for clothing-related labels.
+    Needs GOOGLE_VISION_API_KEY environment variable.
     """
-    stem = image_path.stem.replace("_", " ").replace("-", " ")
-    return f"garment '{stem}' (no model — filename only)"
+    api_key = os.environ.get("GOOGLE_VISION_API_KEY", "").strip()
+    if not api_key:
+        return "(Google Vision skipped — GOOGLE_VISION_API_KEY not set)"
+
+    try:
+        import base64
+        import json
+        import urllib.request
+        with open(image_path, "rb") as f:
+            image_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        payload = json.dumps({
+            "requests": [{
+                "image": {"content": image_b64},
+                "features": [
+                    {"type": "LABEL_DETECTION",     "maxResults": 10},
+                    {"type": "OBJECT_LOCALIZATION",  "maxResults": 5},
+                ],
+            }]
+        }).encode("utf-8")
+
+        url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+
+        response = data.get("responses", [{}])[0]
+        labels   = response.get("labelAnnotations", [])
+
+        # Prefer clothing-related labels; fall back to top generic labels
+        clothing_keywords = (
+            "clothing", "shirt", "jacket", "coat", "dress", "trousers",
+            "shorts", "shoe", "boot", "hat", "scarf", "glove", "bag",
+            "wear", "garment", "fashion", "outfit", "sleeve", "collar",
+            "sweater", "hoodie", "uniform", "suit", "jeans", "sock",
+        )
+        clothing_labels = [
+            l for l in labels
+            if any(k in l["description"].lower() for k in clothing_keywords)
+        ]
+        top_labels = clothing_labels[:3] if clothing_labels else labels[:3]
+
+        if not top_labels:
+            return "(Google Vision: no labels returned)"
+
+        label_str = ", ".join(
+            f"{l['description']} ({l['score']:.0%})" for l in top_labels
+        )
+        return f"{label_str} (Google Vision)"
+
+    except urllib.error.HTTPError as e:
+        # This will tell you EXACTLY why Google rejected it (e.g., "API Key not found")
+        error_details = e.read().decode("utf-8")
+        return f"(Google Vision error: {e.code} - {error_details})"
+    except Exception as e:
+        return f"(Google Vision error: {e})"
+
+# ── Backend 3: CLIP ───────────────────────────────────────────────────────────
+# Set this to prevent CLIP from hanging on certain operating systems
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+# ── Lazy-loaded CLIP Singletons ──────────────────────────────────────────────
+_CLIP_MODEL = None
+_CLIP_PROCESSOR = None
+_CLIP_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+def _get_clip_resources() -> Tuple[object, object, str]:
+    """Ensures CLIP is loaded exactly once and returns (model, processor, device)."""
+    global _CLIP_MODEL, _CLIP_PROCESSOR
+    
+    if _CLIP_MODEL is None:
+        from transformers import CLIPModel, CLIPProcessor
+        print(f"  [CLIP] Loading weights to {_CLIP_DEVICE} (first time only)...")
+        
+        model_name = "openai/clip-vit-base-patch32"
+        # We set local_files_only=False to ensure it downloads if missing
+        _CLIP_MODEL = CLIPModel.from_pretrained(model_name)
+        _CLIP_PROCESSOR = CLIPProcessor.from_pretrained(model_name)
+        
+        _CLIP_MODEL.to(_CLIP_DEVICE).eval()
+        print("  [CLIP] Model ready.")
+        
+    return _CLIP_MODEL, _CLIP_PROCESSOR, _CLIP_DEVICE
+
+# ── Backend 3: CLIP ───────────────────────────────────────────────────────────
+
+def _detect_clip(image_path: Path,
+                 recommender_items: Optional[List[str]] = None) -> str:
+    """
+    Use CLIP to identify garments using a two-pass semantic match.
+    Pass 1: Check against the system's packing item vocabulary.
+    Pass 2: Fallback to generic clothing categories.
+    """
+    try:
+        from PIL import Image
+        import torch
+    except ImportError:
+        return "(CLIP skipped — missing PIL or torch. Run: pip install torch Pillow)"
+
+    try:
+        # 1. Get the singleton model/processor
+        model, processor, device = _get_clip_resources()
+
+        # 2. Prepare Image
+        image = Image.open(str(image_path)).convert("RGB")
+
+        # ── Pass 1: Recommender Vocabulary Match ─────────────────────────────
+        if recommender_items:
+            prompts = [f"a photo of {item.lower()}" for item in recommender_items]
+            
+            inputs = processor(
+                text=prompts, 
+                images=image,
+                return_tensors="pt", 
+                padding=True, 
+                truncation=True
+            ).to(device)
+
+            with torch.no_grad():
+                outputs = model(**inputs)
+                # Get probabilities
+                probs = outputs.logits_per_image.softmax(dim=1)[0]
+
+            best_idx = int(probs.argmax())
+            best_score = float(probs[best_idx])
+
+            # If it's a strong match for an item we actually recommend, return it
+            if best_score >= CLIP_RECOMMENDER_THRESHOLD:
+                return (f"{recommender_items[best_idx]} "
+                        f"(CLIP match, score {best_score:.2f})")
+
+        # ── Pass 2: Generic Clothing Fallback ────────────────────────────────
+        # If Pass 1 wasn't confident, check against the broader vocab
+        generic_prompts = [f"a photo of {item}" for item in _CLIP_GENERIC_VOCAB]
+        
+        inputs = processor(
+            text=generic_prompts, 
+            images=image,
+            return_tensors="pt", 
+            padding=True, 
+            truncation=True
+        ).to(device)
+
+        with torch.no_grad():
+            outputs = model(**inputs)
+            probs = outputs.logits_per_image.softmax(dim=1)[0]
+
+        # Return the top 2 likely generic categories
+        top_k = probs.topk(2)
+        indices = top_k.indices.tolist()
+        scores = top_k.values.tolist()
+        
+        label_str = ", ".join(
+            f"{_CLIP_GENERIC_VOCAB[idx]} ({scores[i]:.2f})" 
+            for i, idx in enumerate(indices)
+        )
+        return f"{label_str} (CLIP generic)"
+
+    except Exception as e:
+        return f"(CLIP error: {e})"
 
 
-# ── Stage 2: Gemini narrative advice ─────────────────────────────────────────
+# ── Gemini narrative advice ───────────────────────────────────────────────────
 
 def _build_clothing_narrative(recommendations: List[DayRecommendation]) -> str:
-    """Summarise the trip's clothing needs as a plain-text paragraph."""
-    from display import _clothing_narrative, _fmt_date
-    lines = []
-    for rec in recommendations:
-        lines.append(_clothing_narrative(rec))
-    return "\n".join(lines)
+    from display import _clothing_narrative
+    return "\n".join(_clothing_narrative(rec) for rec in recommendations)
 
 
 def _gemini_advice(garment_label: str, image_path: Path,
                    narrative: str, context: TripContext) -> str:
-    """
-    Ask Gemini whether this garment is suitable for the trip.
-    Returns the model's text response, or an empty string on any failure.
-    """
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
         return ""
-
     try:
         from google import genai
-        import PIL.Image
-
-        client = genai.Client(api_key=api_key)
-        img    = PIL.Image.open(str(image_path))
-
-        prompt = (
+        from PIL import Image as PILImage
+        client   = genai.Client(api_key=api_key)
+        img      = PILImage.open(str(image_path))
+        prompt   = (
             f"I am travelling to {context.city}, {context.country} "
             f"for a {context.purpose or 'personal'} trip.\n\n"
-            f"Here is the day-by-day weather and clothing forecast for my trip:\n"
-            f"{narrative}\n\n"
+            f"Day-by-day clothing forecast:\n{narrative}\n\n"
             f"The image shows: {garment_label}.\n\n"
-            "Based on the forecast, should I pack this item? "
-            "Give a brief, practical answer (2-4 sentences): "
-            "mention the most relevant weather conditions and whether "
-            "this garment fits them."
+            "Should I pack this item? Give a brief practical answer (2-4 sentences) "
+            "mentioning the most relevant weather conditions."
         )
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[prompt, img],
+            model="gemini-2.5-flash", contents=[prompt, img],
         )
         return response.text.strip()
-
     except Exception as e:
         return f"(Gemini unavailable: {e})"
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def analyse_outfits(image_paths: List[str],
-                    recommendations: List[DayRecommendation],
-                    context: TripContext) -> None:
-    """
-    Analyse each wardrobe photo and print packing advice to the terminal.
-
-    Parameters
-    ----------
-    image_paths    : paths to wardrobe photos (jpg/png)
-    recommendations: per-day clothing recommendations from recommender.py
-    context        : TripContext (city, country, purpose)
-    """
-    if not image_paths:
-        return
-
-    # Build clothing narrative once (shared across all images)
-    narrative = _build_clothing_narrative(recommendations)
-
-    _print_header("Wardrobe Photo Analysis")
-
-    for raw_path in image_paths:
-        path = Path(raw_path)
-        if not path.exists():
-            print(f"  [!] File not found: {path}")
-            continue
-
-        print(f"\n  Analysing: {path.name}")
-
-        # Stage 1 — local detection
-        garment_label = _detect_with_yolo(path)
-        print(f"  Detected : {garment_label}")
-
-        # Stage 2 — Gemini narrative (optional)
-        advice = _gemini_advice(garment_label, path, narrative, context)
-        if advice:
-            print(f"  Advice   : {advice}")
-        else:
-            # Minimal rule-based fallback when Gemini is not available
-            advice = _rule_based_advice(garment_label, recommendations)
-            print(f"  Advice   : {advice}")
-
-    _print_footer()
-
-
-def _rule_based_advice(garment_label: str, recommendations: List[DayRecommendation]) -> str:
-    """
-    Simple keyword-matching advice when no LLM is available.
-    Checks whether the detected garment type matches the trip's clothing list.
-    """
-    label_lower = garment_label.lower()
+def _rule_based_advice(garment_label: str,
+                       recommendations: List[DayRecommendation]) -> str:
+    
+    label_lower  = garment_label.lower()
     all_clothing = {c.lower() for rec in recommendations for c in rec.clothing}
     rain_days    = sum(1 for rec in recommendations
                        if any("rain" in a.lower() or "shower" in a.lower()
                               for a in rec.alerts))
 
-    # Jacket / coat keywords
-    if any(k in label_lower for k in ("jacket", "coat", "anorak", "parka", "raincoat", "poncho")):
+    if any(k in label_lower for k in ("jacket", "coat", "anorak", "parka",
+                                       "raincoat", "poncho", "windbreaker")):
         if rain_days > 0:
-            return (f"Rain is expected on {rain_days} day(s). "
-                    "A waterproof or windproof jacket is a good idea — pack it.")
+            return (f"Rain expected on {rain_days} day(s) — "
+                    "a waterproof outer layer is a good idea, pack it.")
         if any("jacket" in c or "coat" in c for c in all_clothing):
-            return "An outer layer is recommended for this trip. This jacket looks suitable."
-        return "The forecast is mild — a light jacket may suffice for cool evenings."
+            return "An outer layer is on the packing list — this jacket looks suitable."
+        return "Forecast is mild — a light jacket may only be needed for cool evenings."
 
-    # T-shirt / light top keywords
-    if any(k in label_lower for k in ("t-shirt", "jersey", "polo", "tee", "shirt")):
-        if any("lightweight" in c or "t-shirt" in c or "short" in c for c in all_clothing):
-            return "Light tops are recommended for this trip. This shirt is a good fit — pack it."
-        return "The forecast may call for warmer layers. Consider this as a base layer only."
+    if any(k in label_lower for k in ("t-shirt", "jersey", "polo", "tee",
+                                       "shirt", "blouse", "top")):
+        if any("lightweight" in c or "t-shirt" in c or "short" in c
+               for c in all_clothing):
+            return "Light tops are recommended — this is a good fit, pack it."
+        return "Forecast may call for warmer layers — consider as a base layer only."
 
-    # Sweater / fleece keywords
-    if any(k in label_lower for k in ("sweater", "sweatshirt", "fleece", "pullover", "cardigan")):
+    if any(k in label_lower for k in ("sweater", "sweatshirt", "fleece",
+                                       "pullover", "cardigan", "hoodie")):
         if any("sweater" in c or "fleece" in c or "warm" in c for c in all_clothing):
-            return "Warm mid-layers are on the packing list for this trip. This item fits well."
-        return "Forecast looks mild-to-warm — this may be too heavy. Pack only if expecting cold evenings."
+            return "Warm mid-layers are on the packing list — this item fits well."
+        return "Forecast looks mild-to-warm — pack only if expecting cold evenings."
 
-    # Shoes / boots keywords
-    if any(k in label_lower for k in ("shoe", "boot", "loafer", "sneaker", "running shoe")):
+    if any(k in label_lower for k in ("shoe", "boot", "loafer",
+                                       "sneaker", "running shoe", "sandal")):
         if rain_days > 0:
-            return "Wet conditions expected — waterproof or comfortable walking shoes are advisable."
-        return "Comfortable walking shoes are always useful for travel. This looks like a reasonable choice."
+            return "Wet conditions expected — waterproof or sturdy shoes advisable."
+        return "Comfortable walking shoes are always useful for travel."
 
-    # Generic fallback
-    return ("Check the day-by-day clothing table above to see if this garment "
+    return ("Check the day-by-day clothing table to see if this garment "
             "matches the recommended items for your trip.")
+
+
+# ── Display helpers ───────────────────────────────────────────────────────────
+
+def _filename_fallback(image_path: Path, note: str = "") -> str:
+    stem = image_path.stem.replace("_", " ").replace("-", " ")
+    return f"garment '{stem}'" + (f" ({note})" if note else "")
 
 
 def _print_header(title: str) -> None:
@@ -260,13 +391,142 @@ def _print_header(title: str) -> None:
                               title="[bold blue]👗 Image Recognition[/]",
                               border_style="blue"))
     except ImportError:
-        sep = "-" * 60
-        print(f"\n{sep}\n{title}\n{sep}")
+        print(f"\n{'─'*60}\n{title}\n{'─'*60}")
 
 
-def _print_footer() -> None:
+def _print_single_result(path: Path, backend: str,
+                         label: str, advice: str) -> None:
     try:
         from rich.console import Console
-        Console().print("[dim]Set GEMINI_API_KEY for richer AI-powered advice.[/]")
+        console = Console()
+        console.print(f"\n  [cyan]File    :[/] {path.name}")
+        console.print(f"  [cyan]Backend :[/] [bold]{backend.upper()}[/]")
+        console.print(f"  [cyan]Detected:[/] {label}")
+        console.print(f"  [cyan]Advice  :[/] {advice}")
     except ImportError:
-        print("\n(Set GEMINI_API_KEY for richer AI-powered advice.)")
+        print(f"\n  File    : {path.name}")
+        print(f"  Backend : {backend.upper()}")
+        print(f"  Detected: {label}")
+        print(f"  Advice  : {advice}")
+
+
+def _print_both_results(path: Path,
+                        labels: Dict[str, str],
+                        advice: Dict[str, str]) -> None:
+    """Side-by-side comparison table for --vision both."""
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich import box
+        console = Console()
+        console.print(f"\n  [bold cyan]{path.name}[/]")
+        tbl = Table(box=box.ROUNDED, show_header=True,
+                    header_style="bold magenta", expand=True)
+        tbl.add_column("Backend",  style="bold cyan", no_wrap=True, width=10)
+        tbl.add_column("Detected", style="white",     ratio=2)
+        tbl.add_column("Advice",   style="white",     ratio=3)
+        for backend in ("yolo", "google", "clip"):
+            if backend in labels:
+                tbl.add_row(backend.upper(),
+                            labels[backend],
+                            advice.get(backend, "—"))
+        console.print(tbl)
+    except ImportError:
+        sep = "─" * 60
+        print(f"\n  {path.name}\n  {sep}")
+        for backend in ("yolo", "google", "clip"):
+            if backend in labels:
+                print(f"  [{backend.upper()}]")
+                print(f"    Detected : {labels[backend]}")
+                print(f"    Advice   : {advice.get(backend, '—')}")
+        print(f"  {sep}")
+
+
+def _print_footer(vision: str) -> None:
+    hints = []
+    if vision in ("google", "both") and not os.environ.get("GOOGLE_VISION_API_KEY"):
+        hints.append("Set GOOGLE_VISION_API_KEY to enable Google Vision.")
+    if not os.environ.get("GEMINI_API_KEY"):
+        hints.append("Set GEMINI_API_KEY for AI-powered packing advice.")
+    if hints:
+        msg = "  ".join(hints)
+        try:
+            from rich.console import Console
+            Console().print(f"[dim]{msg}[/]")
+        except ImportError:
+            print(msg)
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def analyse_outfits(image_paths: List[str],
+                    recommendations: List[DayRecommendation],
+                    context: TripContext,
+                    vision: str = "yolo") -> None:
+    """
+    Analyse each wardrobe photo and print packing advice to the terminal.
+
+    Parameters
+    ----------
+    image_paths    : paths to wardrobe photos (jpg/png)
+    recommendations: per-day clothing recommendations from recommender.py
+    context        : TripContext (city, country, purpose)
+    vision         : "yolo" | "google" | "clip" | "both"  (default: "yolo")
+    """
+    if not image_paths:
+        return
+
+    vision = vision.lower()
+    if vision not in VALID_VISION_MODES:
+        print(f"  [!] Unknown --vision mode '{vision}'. "
+              f"Choose from: {VALID_VISION_MODES}")
+        vision = "yolo"
+
+    backends         = ["yolo", "google", "clip"] if vision == "both" else [vision]
+    narrative        = _build_clothing_narrative(recommendations)
+    recommender_items = _get_recommender_items()
+
+    _print_header(f"Wardrobe Analysis  —  backend: {vision.upper()}")
+    for raw_path in image_paths:
+        path = Path(raw_path)
+        if not path.exists():
+            print(f"  [!] File not found: {path}")
+            continue
+
+        if vision == "both":
+            labels, advice = {}, {}
+            for backend in backends:
+                lbl = _run_backend(backend, path, recommender_items)
+                labels[backend] = lbl
+                adv = _gemini_advice(lbl, path, narrative, context)
+                advice[backend] = adv or _rule_based_advice(lbl, recommendations)
+            _print_both_results(path, labels, advice)
+        else:
+            label = _run_backend(vision, path, recommender_items)
+            adv   = _gemini_advice(label, path, narrative, context)
+            if not adv:
+                adv = _rule_based_advice(label, recommendations)
+            _print_single_result(path, vision, label, adv)
+
+    _print_footer(vision)
+
+
+def _run_backend(backend: str, image_path: Path,
+                 recommender_items: List[str]) -> str:
+    """Dispatch to the correct detection backend."""
+    if backend == "yolo":
+        return _detect_yolo(image_path)
+    if backend == "google":
+        return _detect_google_vision(image_path)
+    if backend == "clip":
+        return _detect_clip(image_path, recommender_items)
+    return _filename_fallback(image_path, note=f"unknown backend '{backend}'")
+
+
+def _get_recommender_items() -> List[str]:
+    """Return the 37-item vocabulary from recommender.py."""
+    try:
+        from recommender import ALL_ITEMS
+        return list(ALL_ITEMS)
+    except ImportError:
+        return []

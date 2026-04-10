@@ -28,28 +28,10 @@ def _build_url(lat: float, lon: float, timezone: str, start: str, end: str, hist
     return f"{base}?{params}"
 
 
-def get_forecast(lat: float, lon: float, timezone: str, start_date: str, end_date: str) -> list:
-    """
-    Fetch daily weather forecast from Open-Meteo.
-    Automatically switches to historical API for past dates.
-    Returns list of DayForecast.
-    """
-    today = date.today()
-    start = date.fromisoformat(start_date)
-    end = date.fromisoformat(end_date)
-
-    # Clamp to 16-day forecast limit for future dates
-    max_end = today + timedelta(days=MAX_FORECAST_DAYS - 1)
-    if end > max_end and start >= today:
-        print(f"[Warning] Forecast only available up to {max_end}. Clamping end date.")
-        end = max_end
-        end_date = end.isoformat()
-
-    # Determine if we need historical or forecast API
-    historical = end < today
-
+def _fetch_single(lat: float, lon: float, timezone: str,
+                  start_date: str, end_date: str, historical: bool) -> list:
+    """Fetch one contiguous date range from either the archive or forecast API."""
     url = _build_url(lat, lon, timezone, start_date, end_date, historical)
-
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
             data = json.loads(resp.read())
@@ -59,7 +41,7 @@ def get_forecast(lat: float, lon: float, timezone: str, start_date: str, end_dat
     daily = data.get("daily", {})
     dates = daily.get("time", [])
     if not dates:
-        raise ValueError("No forecast data returned for this location/date range.")
+        return []
 
     def _val(key, i, default=0.0):
         v = daily.get(key, [])
@@ -77,5 +59,44 @@ def get_forecast(lat: float, lon: float, timezone: str, start_date: str, end_dat
             wind_speed_max=_val("wind_speed_10m_max", i),
             weather_code=int(_val("weather_code", i)),
         ))
+    return forecasts
+
+
+def get_forecast(lat: float, lon: float, timezone: str, start_date: str, end_date: str) -> list:
+    """
+    Fetch daily weather forecast from Open-Meteo.
+    Automatically switches to historical API for past dates.
+    Splits mixed past/future ranges across both APIs.
+    Returns list of DayForecast.
+    """
+    today = date.today()
+    start = date.fromisoformat(start_date)
+    end   = date.fromisoformat(end_date)
+
+    # Clamp to 16-day forecast limit
+    max_end = today + timedelta(days=MAX_FORECAST_DAYS - 1)
+    if end > max_end:
+        print(f"[Warning] End date clamped to forecast limit ({max_end}).")
+        end = max_end
+
+    forecasts = []
+
+    # Past segment → archive API (up to and including yesterday)
+    yesterday = today - timedelta(days=1)
+    if start <= yesterday:
+        past_end = min(end, yesterday)
+        forecasts += _fetch_single(lat, lon, timezone,
+                                   start.isoformat(), past_end.isoformat(),
+                                   historical=True)
+
+    # Future segment → forecast API (today onwards)
+    if end >= today:
+        future_start = max(start, today)
+        forecasts += _fetch_single(lat, lon, timezone,
+                                   future_start.isoformat(), end.isoformat(),
+                                   historical=False)
+
+    if not forecasts:
+        raise ValueError("No forecast data returned for this location/date range.")
 
     return forecasts

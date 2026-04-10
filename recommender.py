@@ -277,7 +277,8 @@ def train_and_save(verbose: bool = True, model_type: str = "lgbm") -> object:
             num_leaves=31,
             min_child_samples=20,
             verbose=-1,
-        ), n_jobs=-1)
+            n_jobs=1,       # Add this for the inner model
+            ), n_jobs=1)        # Change this to 1 for the outer wrapper
 
     elif model_type == "random_forest":
         # Bagging ensemble — robust to label noise, no learning-rate tuning needed.

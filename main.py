@@ -34,6 +34,27 @@ from recommender import recommend_day, build_trip_packing_list
 from models import TripContext
 from display import display, plot_forecast
 from image_recognition import analyse_outfits
+from packing_optimizer import optimise_from_recommendations, optimise_items
+import os
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+
+# 1. Load the keys from the .env file
+# Define your custom path here
+# Example: Look in /Users/wenting/Documents/keys/.env
+custom_path = Path("/Users/wenting/.env")
+
+if custom_path.exists():
+    load_dotenv(dotenv_path=custom_path)
+else:
+    print(f"Warning: .env file not found at {custom_path}")
+
+# Fix for macOS Segmentation Fault when using LightGBM + Torch
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+os.environ['OMP_NUM_THREADS'] = '1'
+
+# ... your other imports ...
 
 VALID_PURPOSES   = ("business", "tourism", "visiting")
 VALID_METHODS    = ("forecast", "current", "historical")
@@ -63,8 +84,21 @@ def parse_args():
                         help="Recommendation algorithm: lgbm (default), random_forest, knn, rules")
     parser.add_argument("--images",  nargs="+", metavar="PATH",
                         help="Wardrobe photo paths to analyse against the forecast")
+    parser.add_argument("--vision",  default="yolo",
+                        choices=["yolo", "google", "clip", "both"],
+                        help="Image recognition backend: yolo (default), google, clip, both")
+    '''
+    parser.add_argument("--optimize", action="store_true",
+                        help="Run GA → Knapsack → Summary optimization pipeline")
+    parser.add_argument("--weight-limit", type=float, default=20.0, metavar="KG",
+                        help="Baggage weight limit in kg for optimization (default: 20.0)")
+    parser.add_argument("--optimize-items", nargs="+", metavar="ITEM",
+                        help="Standalone optimization: provide item names directly "
+                             "(skips recommender; use with --weight-limit)")   
+                             ''' 
     parser.add_argument("--retrain", action="store_true",
                         help="Force retrain the recommendation model (respects --model)")
+    
     return parser.parse_args()
 
 
@@ -105,6 +139,7 @@ def validate_dates(start_str: str, end_str: str, method: str, n_years: int):
 
 def main():
     args = parse_args()
+    print(str(args.vision))
 
     # ── Retrain-only mode ─────────────────────────────────────────────────────
     if args.retrain:
@@ -160,6 +195,32 @@ def main():
     recommendations = [recommend_day(f, context, model_type=args.model) for f in forecasts]
     trip_packing    = build_trip_packing_list(recommendations)
 
+    '''
+    # ── Optimization ──────────────────────────────────────────────────────────
+    opt_result = None
+
+    if getattr(args, "optimize_items", None):
+        # Standalone mode: user supplied items directly via --optimize-items
+        print(f"\nRunning standalone optimization on {len(args.optimize_items)} items "
+              f"(limit: {args.weight_limit}kg)...")
+        opt_result = optimise_items(
+            item_names=args.optimize_items,
+            forecasts=forecasts,
+            context=context,
+            weight_limit_kg=args.weight_limit,
+        )
+        
+    elif args.optimize:
+        # Post-recommender mode: optimize the recommender's packing list
+        print(f"\nRunning optimization on recommender packing list "
+              f"(limit: {args.weight_limit}kg)...")
+        opt_result = optimise_from_recommendations(
+            trip_packing=trip_packing,
+            forecasts=forecasts,
+            context=context,
+            weight_limit_kg=args.weight_limit,
+        )'''
+
     # ── Display ───────────────────────────────────────────────────────────────
     display(
         forecasts=forecasts,
@@ -170,11 +231,12 @@ def main():
         n_years=args.years,
         recommendations=recommendations,
         trip_packing=trip_packing,
+        #optimization_result=opt_result,
     )
 
     # ── Image recognition ─────────────────────────────────────────────────────
     if args.images:
-        analyse_outfits(args.images, recommendations, context)
+        analyse_outfits(args.images, recommendations, context, args.vision)
 
     # ── Chart ─────────────────────────────────────────────────────────────────
     if args.chart:
