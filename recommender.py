@@ -11,12 +11,12 @@ Architecture:
   - Auto-trains on first run; subsequent runs load from cache (~50ms)
 
 Model type options (pass model_type= to recommend_day / train_and_save):
-  "lgbm"          (default) MultiOutputClassifier(LGBMClassifier) — gradient
+  "knn"           (default) MultiOutputClassifier(KNeighborsClassifier) — instance-based;
+                  stores training data and looks up k most similar weather conditions.
+  "lgbm"          MultiOutputClassifier(LGBMClassifier) — gradient
                   boosting; highest accuracy on synthetic data.
   "random_forest" MultiOutputClassifier(RandomForestClassifier) — bagging
                   ensemble; no learning-rate tuning needed, robust to noise.
-  "knn"           MultiOutputClassifier(KNeighborsClassifier) — instance-based;
-                  no training step, looks up k most similar weather conditions.
   "rules"         Direct rule evaluation via _rule_labels — no ML at all;
                   instant, deterministic, useful as a reference baseline.
 
@@ -254,12 +254,12 @@ def _generate_training_data(n_samples: int = 15_000, seed: int = 42):
 
 # ── Training ──────────────────────────────────────────────────────────────────
 
-def train_and_save(verbose: bool = True, model_type: str = "lgbm") -> object:
+def train_and_save(verbose: bool = True, model_type: str = "knn") -> object:
     """
     Generate synthetic training data, fit the selected classifier, and persist
     to the corresponding model file via joblib.
 
-    model_type: "lgbm" (default), "random_forest", "knn"
+    model_type: "knn" (default), "lgbm", "random_forest"
                 ("rules" needs no training — pass it to recommend_day directly)
     """
     from sklearn.multioutput import MultiOutputClassifier
@@ -322,7 +322,7 @@ def train_and_save(verbose: bool = True, model_type: str = "lgbm") -> object:
 _model_cache: dict = {}
 
 
-def _load_or_train(model_type: str = "lgbm"):
+def _load_or_train(model_type: str = "knn"):
     """Load model from disk if available, otherwise train and save it."""
     if model_type == "rules":
         return None  # rules mode needs no model
@@ -384,8 +384,29 @@ def _day_summary(forecast: DayForecast) -> str:
 #    packing: list = field(default_factory=list)
 #    alerts: list = field(default_factory=list)
 #    summary: str = ""
+def suitability_scores(forecast: DayForecast, context: TripContext,
+                       model_type: str = "knn") -> dict:
+    """
+    Return a suitability score (0.0–1.0) for every item.
+    For ML models: uses predict_proba() — probability that the item is recommended.
+    For rules: returns 1.0 (recommended) or 0.0 (not recommended).
+    """
+    feat = _features(forecast, context.purpose)
+
+    if model_type == "rules":
+        pred = _rule_labels(*feat.to_numpy()[0])
+        return {ALL_ITEMS[i]: float(pred[i]) for i in range(len(ALL_ITEMS))}
+
+    model = _load_or_train(model_type)
+    proba_list = model.predict_proba(feat)  # list of 37 arrays, each shape (1, 2)
+    return {
+        ALL_ITEMS[i]: round(float(proba_list[i][0][1]), 3)
+        for i in range(len(ALL_ITEMS))
+    }
+
+
 def recommend_day(forecast: DayForecast, context: TripContext,
-                  model_type: str = "lgbm") -> DayRecommendation:
+                  model_type: str = "knn") -> DayRecommendation:
     feat = _features(forecast, context.purpose)  # single-row DataFrame
 
     if model_type == "rules":

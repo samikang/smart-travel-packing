@@ -53,6 +53,11 @@ YOLO_DET_PATH = _HERE / "yolov8n.pt"
 
 VALID_VISION_MODES = ("yolo", "google", "clip", "both")
 
+# Raster files accepted when scanning a wardrobe folder (--imagesm)
+IMAGE_FILE_SUFFIXES = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
+}
+
 # CLIP: if best recommender-item similarity is below this, use generic vocab
 CLIP_RECOMMENDER_THRESHOLD = 0.20
 
@@ -458,6 +463,23 @@ def _print_footer(vision: str) -> None:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+def collect_image_paths_from_folder(folder: str) -> List[str]:
+    """
+    Return sorted absolute paths to image files in ``folder`` (non-recursive).
+
+    Only regular files whose suffix is in IMAGE_FILE_SUFFIXES are included.
+    If ``folder`` is missing or not a directory, returns an empty list.
+    """
+    root = Path(folder).expanduser()
+    if not root.is_dir():
+        return []
+    out: List[str] = []
+    for p in root.iterdir():
+        if p.is_file() and p.suffix.lower() in IMAGE_FILE_SUFFIXES:
+            out.append(str(p.resolve()))
+    return sorted(out)
+
 
 def analyse_outfits(image_paths: List[str],
                     recommendations: List[DayRecommendation],

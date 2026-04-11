@@ -13,7 +13,7 @@ Usage:
     python main.py --retrain
 
     # Analyse wardrobe photos against the forecast:
-    python main.py --city "Singapore" --start 2026-05-01 --end 2026-05-05 --images img/outfit1.jpg img/outfit2.jpg
+    python main.py --city "Singapore" --start 2026-05-01 --end 2026-05-05 --images img/
 
 """
 
@@ -32,7 +32,7 @@ import sys
 import threading
 import base64
 import requests
-from image_recognition import analyse_outfits
+from image_recognition import analyse_outfits, collect_image_paths_from_folder
 from packing_optimizer import optimise_from_recommendations, optimise_items
 import os
 
@@ -58,11 +58,14 @@ def parse_args():
                         help="prediction algorithm: theil_sen (default), ewm_ols, holt_des, gpr")
     parser.add_argument("--chart",   action="store_true",
                         help="Generate and save a matplotlib forecast chart (PNG)")
-    parser.add_argument("--model",   default="lgbm",
+    parser.add_argument("--model",   default="knn",
                         choices=["lgbm", "random_forest", "knn", "rules"],
-                        help="recommendation algorithm: lgbm (default), random_forest, knn, rules")
-    parser.add_argument("--images",  nargs="+", metavar="PATH",
-                        help="Wardrobe photo paths to analyse against the forecast")
+                        help="recommendation algorithm: knn (default), lgbm, random_forest, rules")
+    parser.add_argument(
+        "--images",
+        metavar="DIR",
+        help="Folder of wardrobe photos (PNG/JPEG/etc.); analyse_outfits runs only if it contains at least one image",
+    )
     parser.add_argument("--vision",  default="yolo",
                         choices=["yolo", "google", "clip", "both"],
                         help="Image recognition backend: yolo (default), google, clip, both")
@@ -139,7 +142,7 @@ def main():
             sys.exit(f"Error: {flag} is required.")
 
     # ── Date validation ────────────────────────────────────────────────────────
-        start_date, end_date = validate_dates_historical(args.start, args.end, args.years)
+    start_date, end_date = validate_dates_historical(args.start, args.end, args.years)
 
     # ── Geocoding ──────────────────────────────────────────────────────────────
     print(f"Looking up location for '{args.city}'...")
@@ -169,7 +172,9 @@ def main():
 
     # ── Image recognition ─────────────────────────────────────────────────────
     if args.images:
-        analyse_outfits(args.images, recommendations, context, args.vision)
+        outfit_paths = collect_image_paths_from_folder(args.images)
+        if outfit_paths:
+            analyse_outfits(outfit_paths, recommendations, context, args.vision)
 
 
 
