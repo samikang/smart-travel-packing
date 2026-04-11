@@ -246,8 +246,7 @@ def display_rich(context, start_date, end_date, recommendations, trip_packing, n
         from google.genai import types
         import PIL.Image                                                                   
         
-        client = genai.Client(api_key="AIzaSyAXA0iqpp2dU2dLRDIcK26FiOl6lCCh0xk")                                           
-                        
+                                
         #img = PIL.Image.open("img/IMG_1.jpg")
         images = [PIL.Image.open(f"img/IMG_{i}.jpg") for i in range(3)]
 
