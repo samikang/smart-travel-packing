@@ -12,7 +12,7 @@ Usage:
     # Retrain the recommendation model:
     python main.py --retrain
 
-    # Analyse wardrobe photos against the forecast:
+    # Optional: analyse wardrobe photos (folder with PNG/JPEG, etc.):
     python main.py --city "Singapore" --start 2026-05-01 --end 2026-05-05 --images img/
 
 """
@@ -64,7 +64,9 @@ def parse_args():
     parser.add_argument(
         "--images",
         metavar="DIR",
-        help="Folder of wardrobe photos (PNG/JPEG/etc.); analyse_outfits runs only if it contains at least one image",
+        default=None,
+        help="Optional. Wardrobe photo folder (PNG/JPEG/etc.). Omit to skip image analysis; "
+             "if given, analyse_outfits runs only when the folder has at least one image file",
     )
     parser.add_argument("--vision",  default="yolo",
                         choices=["yolo", "google", "clip", "both"],
@@ -170,8 +172,8 @@ def main():
     trip_packing    = build_trip_packing_list(recommendations)
 
 
-    # ── Image recognition ─────────────────────────────────────────────────────
-    if args.images:
+    # ── Image recognition (optional — only when --images is passed) ─────────────
+    if args.images is not None and str(args.images).strip():
         outfit_paths = collect_image_paths_from_folder(args.images)
         if outfit_paths:
             analyse_outfits(outfit_paths, recommendations, context, args.vision)

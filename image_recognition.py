@@ -53,7 +53,7 @@ YOLO_DET_PATH = _HERE / "yolov8n.pt"
 
 VALID_VISION_MODES = ("yolo", "google", "clip", "both")
 
-# Raster files accepted when scanning a wardrobe folder (--imagesm)
+# Raster files accepted when scanning a wardrobe folder (--images)
 IMAGE_FILE_SUFFIXES = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
 }
