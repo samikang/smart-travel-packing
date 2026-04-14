@@ -1,0 +1,50 @@
+# Environment files
+.env
+.env.local
+.secrets.toml
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# Streamlit & Hugging Face
+.streamlit/
+.huggingface/
+
+# Logs & temp
+*.log
+*.out
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# User-specific VS Code settings
+.vscode/
+
+# Local model weights (Keep these out of Git to save space)
+models/*.pt
+models/*.onnx
+runs/
+
+
