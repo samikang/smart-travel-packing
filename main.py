@@ -73,7 +73,6 @@ def parse_args():
     parser.add_argument("--vision",  default="yolo",
                         choices=["yolo", "google", "clip", "both"],
                         help="Image recognition backend: yolo (default), google, clip, both")
-    '''
     parser.add_argument("--optimize", action="store_true",
                         help="Run GA → Knapsack → Summary optimization pipeline")
     parser.add_argument("--weight-limit", type=float, default=20.0, metavar="KG",
@@ -81,9 +80,12 @@ def parse_args():
     parser.add_argument("--optimize-items", nargs="+", metavar="ITEM",
                         help="Standalone optimization: provide item names directly "
                              "(skips recommender; use with --weight-limit)")   
+<<<<<<< HEAD
+=======
                              ''' 
     parser.add_argument("--json",    action="store_true",
                         help="Save forecasts, recommendations, and packing list as a JSON file")
+>>>>>>> b4926dbfe9724509683b2e7639c45b0222f21e66
     parser.add_argument("--retrain", action="store_true",
                         help="Force retrain the recommendation model (respects --model)")
     return parser.parse_args()
@@ -182,6 +184,11 @@ def main():
         if outfit_paths:
             wardrobe_items = analyse_outfits(outfit_paths, recommendations, context, args.vision)
 
+<<<<<<< HEAD
+    
+    # ── Optimization ──────────────────────────────────────────────────────────
+    opt_result = None
+=======
     # ── JSON export ────────────────────────────────────────────────────────────
     if args.json:
         from pathlib import Path
@@ -205,16 +212,39 @@ def main():
         json_path  = Path(__file__).parent / f"output.json"
         json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
         print(f"\nJSON saved → {json_path}")
+>>>>>>> b4926dbfe9724509683b2e7639c45b0222f21e66
 
+    if getattr(args, "optimize_items", None):
+        # Standalone mode: user supplied items directly via --optimize-items
+        print(f"\nRunning standalone optimization on {len(args.optimize_items)} items "
+              f"(limit: {args.weight_limit}kg)...")
+        opt_result = optimise_items(
+            item_names=args.optimize_items,
+            forecasts=forecasts,
+            context=context,
+            weight_limit_kg=args.weight_limit,
+
+        )
+        
+    elif args.optimize:
+        # Post-recommender mode: optimize the recommender's packing list
+        print(f"\nRunning optimization on recommender packing list "
+              f"(limit: {args.weight_limit}kg)...")
+        opt_result = optimise_from_recommendations(
+            trip_packing=trip_packing,
+            forecasts=forecasts,
+            context=context,
+            weight_limit_kg=args.weight_limit,
+        )
 
     # ── Display ────────────────────────────────────────────────────────────────
-    display(context, start_date, end_date, recommendations, trip_packing, n_years=args.years)
+    display(context, start_date, end_date, recommendations, trip_packing, n_years=args.years,
+            optimization_result=opt_result)
 
     # ── Chart ──────────────────────────────────────────────────────────────────
     if args.chart:
         chart_path = plot_forecast(forecasts, context, start_date, end_date)
         print(f"\nChart saved → {chart_path}")
-
 
 if __name__ == "__main__":
     main()
