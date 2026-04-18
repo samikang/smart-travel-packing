@@ -519,3 +519,91 @@ def optimise_items(item_names: List[str],
     Unknown items use the DEFAULT_WEIGHT (0.30 kg).
     """
     return _run_pipeline(item_names, forecasts, context, weight_limit_kg)
+
+# ==================================================================================
+# ADDITION by Kevin: Dynamic 3D Bin Packing Optimization
+# Accepts dynamically calculated weights/volumes from CV instead of hardcoded dicts.
+# ==================================================================================
+
+def optimise_dynamic_items(wardrobe_items: list, ml_recommended_items: list,
+                           weight_limit_kg: float, volume_limit_l: float = 40.0,
+                           forecasts = None, context = None) -> 'OptimizationResult':
+    """
+    Advanced 3D Bin Packing optimization for Streamlit.
+    Accepts dynamically calculated weights/volumes from CV instead of hardcoded dicts.
+    """
+    all_items = []
+    
+    # 1. Process User's CV-uploaded wardrobe (Dynamic weights/volumes)
+    for item in wardrobe_items:
+        data = item.get("item_data_json", item)
+        all_items.append({
+            "name": data.get("detected_label", "Unknown Item"),
+            "weight_kg": data.get("calculated_weight_g", 300) / 1000.0,
+            "volume_l": data.get("calculated_volume_l", 2.0),
+            "comfort_score": 0.9 # User selected it, high baseline comfort
+        })
+        
+    # 2. Process ML Recommended items (Fallback to static weights if not in CV)
+    for item_name in ml_recommended_items:
+        # Only add if not already uploaded by user
+        if not any(it["name"].lower() in item_name.lower() for it in all_items):
+            all_items.append({
+                "name": item_name,
+                "weight_kg": _item_weight(item_name), # Use Member B's dict as fallback
+                "volume_l": ITEM_WEIGHTS.get(item_name, 0.30) * 5, # Approx volume from weight if missing
+                "comfort_score": _item_comfort_score(item_name, forecasts, context) if forecasts else 0.5
+            })
+
+    if not all_items:
+        return OptimizationResult(weight_limit=weight_limit_kg)
+
+    # 3. Multi-Constraint Knapsack (Weight AND Volume) using OR-Tools
+    try:
+        from ortools.sat.python import cp_model
+        
+        model = cp_model.CpModel()
+        n = len(all_items)
+        
+        # Create boolean variables for each item
+        x = [model.NewBoolVar(f"x_{i}", str(i)) for i in range(n)]
+        
+        # Separate expressions to prevent parenthesis corruption
+        w_expr = sum(all_items[i]["weight_kg"] * x[i] for i in range(n))
+        v_expr = sum(all_items[i]["volume_l"] * x[i] for i in range(n))
+        c_expr = sum(all_items[i]["comfort_score"] * 1000 * x[i] for i in range(n))
+        
+        # Apply constraints
+        model.Add(w_expr <= weight_limit_kg)
+        model.Add(v_expr <= volume_limit_l)
+        
+        # Maximize comfort
+        model.Maximize(c_expr)
+        
+        # Solve
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = 5.0
+        status = solver.Solve(model)
+        
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            final_items = []
+            total_w, total_v = 0.0, 0.0
+            for i in range(n):
+                if solver.Value(x[i]):
+                    final_items.append(all_items[i]["name"])
+                    total_w += all_items[i]["weight_kg"]
+                    total_v += all_items[i]["volume_l"]
+            
+            return OptimizationResult(
+                final_items=final_items,
+                total_weight=round(total_w, 2),
+                weight_limit=weight_limit_kg,
+                basic_explanation=f"Packed {len(final_items)} items. Weight: {total_w:.1f}kg/{weight_limit_kg}kg, Volume: {total_v:.1f}L/{volume_limit_l}L."
+            )
+            
+    except Exception as e:
+        print(f"[3D Optimizer Error] {e}")
+        
+    # Fallback to standard weight-only knapsack if OR-Tools fails
+    item_names = [it["name"] for it in all_items]
+    return _run_pipeline(item_names, forecasts or [], context or TripContext("tourism", "City", "Country"), weight_limit_kg)

@@ -655,3 +655,76 @@ def _get_recommender_items() -> List[str]:
         return list(ALL_ITEMS)
     except ImportError:
         return []
+    
+# ==================================================================================
+# ADDITION by Kevin: Dynamic Dimension Estimation Algorithm
+# Replaces hardcoded rule-based weight/volume with CV pixel-area heuristics.
+# ==================================================================================
+def estimate_dimensions_from_cv(image_path: Path, label: str, mask = None) -> dict:
+    """
+    Algorithmic estimation of volume and weight using CV segmentation pixel-area.
+    Replaces the hardcoded _GARMENT_RULES dictionary for dynamic packing.
+    """
+    import numpy as np # Isolated import to avoid modifying top-of-file imports
+    
+    try:
+        from PIL import Image
+        img = Image.open(str(image_path))
+        img_area = img.width * img.height
+        
+        # Density constants (kg per pixel^2 approximation for standard folded garments)
+        category_density = {
+            "outer": 4.5e-6,  # Heavy coats, thick jackets
+            "mid": 2.8e-6,    # Sweaters, fleeces
+            "base": 1.5e-6,   # T-shirts, trousers
+            "feet": 3.5e-6,   # Shoes, boots
+            "acc": 1.0e-6     # Scarves, umbrellas
+        }
+        
+        # Determine category roughly from label
+        cat = "base"
+        if any(k in label.lower() for k in ("coat", "jacket", "windproof")): cat = "outer"
+        elif any(k in label.lower() for k in ("sweater", "fleece", "hoodie")): cat = "mid"
+        elif any(k in label.lower() for k in ("shoe", "boot", "sneaker")): cat = "feet"
+        elif any(k in label.lower() for k in ("scarf", "hat", "umbrella")): cat = "acc"
+        
+        density = category_density.get(cat, 2.0e-6)
+        
+        # If YOLO26 segmentation mask is provided, use exact pixel area
+        if mask is not None:
+            # Convert torch tensor to numpy array if necessary
+            if hasattr(mask, 'cpu'):
+                mask = mask.cpu().numpy()
+            garment_pixels = np.count_nonzero(mask)
+            coverage_ratio = garment_pixels / img_area
+        else:
+            # Heuristic: garment usually covers 30-60% of the image bounding box
+            coverage_ratio = 0.45 
+            
+        effective_area = img_area * coverage_ratio
+        estimated_weight_g = (effective_area * density) * 1000 # Convert to grams
+        
+        # Volume estimation (assuming standard folded thickness based on category)
+        thickness_cm = {"base": 3, "mid": 5, "outer": 8, "feet": 10, "acc": 2}.get(cat, 4)
+        folded_area_cm2 = (effective_area ** 0.5) * 0.8 * 0.0264 # Approx pixel to cm conversion
+        volume_cm3 = folded_area_cm2 * thickness_cm
+        volume_l = volume_cm3 / 1000
+        
+        # Cross-validate with Gemini if available (soft fallback)
+        gemini_est = _estimate_garment_properties(label, image_path)
+        if gemini_est.get("weight_g") and gemini_est.get("volume_l"):
+            # Average the algorithmic calculation with LLM visual estimation
+            final_weight = (estimated_weight_g + gemini_est["weight_g"]) / 2
+            final_volume = (volume_l + gemini_est["volume_l"]) / 2
+        else:
+            final_weight = estimated_weight_g
+            final_volume = volume_l
+            
+        return {
+            "weight_g": int(max(50, min(3000, final_weight))), # Clamp to realistic bounds
+            "volume_l": round(max(0.1, min(15.0, final_volume)), 1)
+        }
+        
+    except Exception as e:
+        print(f"[Dynamic Estimation Error] {e}")
+        return _rule_based_properties(label) # Graceful fallback to original rules
