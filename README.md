@@ -37,6 +37,9 @@ python main.py --city "New York" --start 2026-08-01 --end 2026-08-05 --purpose t
 
 # Force retrain the recommendation model
 python main.py --retrain
+
+# Run with trigger Optimization 
+python main.py --city "Singapore" --start 2026-05-01 --end 2026-05-05 --purpose visiting --model knn --optimize
 ```
 
 ### Arguments

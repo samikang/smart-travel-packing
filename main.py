@@ -18,9 +18,7 @@ Usage:
 """
 
 import argparse
-import json
 import sys
-from dataclasses import asdict
 from datetime import date, timedelta
 
 from geocoder import get_location
@@ -31,6 +29,8 @@ from models import TripContext
 from display import display, plot_forecast
 import subprocess
 import sys
+import json
+from dataclasses import asdict
 import threading
 import base64
 import requests
@@ -73,15 +73,13 @@ def parse_args():
     parser.add_argument("--vision",  default="yolo",
                         choices=["yolo", "google", "clip", "both"],
                         help="Image recognition backend: yolo (default), google, clip, both")
-    '''
     parser.add_argument("--optimize", action="store_true",
                         help="Run GA → Knapsack → Summary optimization pipeline")
     parser.add_argument("--weight-limit", type=float, default=20.0, metavar="KG",
                         help="Baggage weight limit in kg for optimization (default: 20.0)")
     parser.add_argument("--optimize-items", nargs="+", metavar="ITEM",
                         help="Standalone optimization: provide item names directly "
-                             "(skips recommender; use with --weight-limit)")   
-                             ''' 
+                             "(skips recommender; use with --weight-limit)")
     parser.add_argument("--json",    action="store_true",
                         help="Save forecasts, recommendations, and packing list as a JSON file")
     parser.add_argument("--retrain", action="store_true",
@@ -175,11 +173,14 @@ def main():
     recommendations = [recommend_day(f, context, model_type=args.model) for f in forecasts]
     trip_packing    = build_trip_packing_list(recommendations)
 
+
     # ── Image recognition (optional — only when --images is passed) ─────────────
     wardrobe_items: list = []
+
     if args.images is not None and str(args.images).strip():
         outfit_paths = collect_image_paths_from_folder(args.images)
         if outfit_paths:
+            #analyse_outfits(outfit_paths, recommendations, context, args.vision)
             wardrobe_items = analyse_outfits(outfit_paths, recommendations, context, args.vision)
 
     # ── JSON export ────────────────────────────────────────────────────────────
@@ -207,14 +208,41 @@ def main():
         print(f"\nJSON saved → {json_path}")
 
 
+    
+    # ── Optimization ──────────────────────────────────────────────────────────
+    opt_result = None
+
+    if getattr(args, "optimize_items", None):
+        # Standalone mode: user supplied items directly via --optimize-items
+        print(f"\nRunning standalone optimization on {len(args.optimize_items)} items "
+              f"(limit: {args.weight_limit}kg)...")
+        opt_result = optimise_items(
+            item_names=args.optimize_items,
+            forecasts=forecasts,
+            context=context,
+            weight_limit_kg=args.weight_limit,
+
+        )
+        
+    elif args.optimize:
+        # Post-recommender mode: optimize the recommender's packing list
+        print(f"\nRunning optimization on recommender packing list "
+              f"(limit: {args.weight_limit}kg)...")
+        opt_result = optimise_from_recommendations(
+            trip_packing=trip_packing,
+            forecasts=forecasts,
+            context=context,
+            weight_limit_kg=args.weight_limit,
+        )
+
     # ── Display ────────────────────────────────────────────────────────────────
-    display(context, start_date, end_date, recommendations, trip_packing, n_years=args.years)
+    display(context, start_date, end_date, recommendations, trip_packing, n_years=args.years,
+            optimization_result=opt_result)
 
     # ── Chart ──────────────────────────────────────────────────────────────────
     if args.chart:
         chart_path = plot_forecast(forecasts, context, start_date, end_date)
         print(f"\nChart saved → {chart_path}")
-
 
 if __name__ == "__main__":
     main()

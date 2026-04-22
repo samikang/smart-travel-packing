@@ -169,7 +169,7 @@ def plot_forecast(forecasts: list, context: TripContext,
 
 # ── Terminal display ──────────────────────────────────────────────────────────
 
-def display_rich(context, start_date, end_date, recommendations, trip_packing, n_years=None):
+def display_rich(context, start_date, end_date, recommendations, trip_packing, n_years=None, optimization_result=None):
     console = Console()
 
     method_tag = f"[yellow]Historical Prediction ({n_years}yr avg + trend)[/]"
@@ -217,6 +217,7 @@ def display_rich(context, start_date, end_date, recommendations, trip_packing, n
     narratives = "\n\n".join(_clothing_narrative(rec) for rec in recommendations)
 
     #call claude to get the suggestions
+    '''
     if False:
         proc = subprocess.run(
         [
@@ -255,12 +256,68 @@ def display_rich(context, start_date, end_date, recommendations, trip_packing, n
             #contents=["based on the trip day weather forcast and cloth suggestions:"+narratives+", please let me know what is this picture weight and volume ,should I take it during the trip? not too long explain", *images]  # PIL Image works directly             
         #)                                                                                  
         #print(response.text)
-        msg ="test"#response.text
+        #msg ="test"#response.text
+        #console.print(Panel(msg, title="[bold blue] Suggestions[/]", border_style="blue"))
+    '''
+
+    # ── Optimization panels (only when --optimize was used) ───────────────────
+    if optimization_result is not None:
+        _display_rich_optimizer(console, optimization_result)
+        '_display_rich_optimizer(console, optimization_result)'
     
+def _display_rich_optimizer(console, opt) -> None:
+    """Render the three optimizer stages as separate rich panels."""
+    from rich.table import Table as _Table
 
+    # ── Stage 1: GA Pareto solutions ──────────────────────────────────────────
+    ga_table = _Table(box=box.ROUNDED, show_header=True, header_style="bold cyan")
+    ga_table.add_column("ID",      style="bold white", no_wrap=True, width=4)
+    ga_table.add_column("Items",   style="white")
+    ga_table.add_column("Comfort", style="white", no_wrap=True, width=9)
+    ga_table.add_column("Weight",  style="white", no_wrap=True, width=9)
 
+    for s in opt.ga_solutions:
+        comfort_bar = _fitness_bar(s.fitness_comfort)
+        weight_bar  = _fitness_bar(s.fitness_weight)
+        items_str   = ", ".join(s.items[:4])
+        if len(s.items) > 4:
+            items_str += f" [dim]+{len(s.items)-4} more[/]"
+        ga_table.add_row(s.solution_id, items_str, comfort_bar, weight_bar)
 
-    console.print(Panel(msg, title="[bold blue] Suggestions[/]", border_style="blue"))
+    console.print(Panel(
+        ga_table,
+        title="[bold magenta]Stage 1 — Genetic Algorithm  Pareto Front[/]",
+        border_style="magenta",
+    ))
+
+    # ── Stage 2: Knapsack result ──────────────────────────────────────────────
+    weight_color = "green" if opt.total_weight <= opt.weight_limit else "red"
+    weight_line  = (f"[{weight_color}]{opt.total_weight:.1f}kg[/] "
+                    f"/ {opt.weight_limit:.1f}kg limit")
+    items_lines  = "\n".join(f"  • {it}" for it in opt.final_items)
+    console.print(Panel(
+        f"[bold]Total weight:[/] {weight_line}\n\n"
+        f"[bold]Optimized packing list:[/]\n{items_lines}",
+        title="[bold green]Stage 2 — Knapsack  Final Selection[/]",
+        border_style="green",
+    ))
+
+    # ── Stage 3: Summary ──────────────────────────────────────────────────────
+    removed_lines = (
+        "\n".join(f"  [red]✗[/] {it}" for it in opt.removed_items)
+        if opt.removed_items else "  [green]Nothing removed — all items fit.[/]"
+    )
+    fitness_line = (
+        f"Comfort [bold]{opt.final_fitness_comfort:.2f}[/]  |  "
+        f"Weight  [bold]{opt.final_fitness_weight:.2f}[/]"
+    )
+    console.print(Panel(
+        f"[bold]Removed items:[/]\n{removed_lines}\n\n"
+        f"[bold]Final fitness:[/]  {fitness_line}\n\n"
+        f"[bold]Explanation:[/]  {opt.basic_explanation}",
+        title="[bold yellow]Stage 3 — Optimization Summary[/]",
+        border_style="yellow",
+    ))
 
 
 def display_plain(context, start_date, end_date, recommendations, trip_packing, n_years=None):
@@ -292,8 +349,16 @@ def display_plain(context, start_date, end_date, recommendations, trip_packing, 
     print(sep)
 
 
-def display(context, start_date, end_date, recommendations, trip_packing, n_years=None):
+def display(context, start_date, end_date, recommendations, trip_packing, n_years=None,
+                 optimization_result=None):
     if RICH_AVAILABLE:
-        display_rich(context, start_date, end_date, recommendations, trip_packing, n_years)
+        display_rich(context, start_date, end_date, recommendations, trip_packing, n_years, optimization_result)
     else:
-        display_plain(context, start_date, end_date, recommendations, trip_packing, n_years)
+        display_plain(context, start_date, end_date, recommendations, trip_packing, n_years, optimization_result)
+
+def _fitness_bar(score: float, width: int = 8) -> str:
+    """Render a score 0–1 as a coloured text bar."""
+    filled = round(score * width)
+    bar    = "█" * filled + "░" * (width - filled)
+    color  = "green" if score >= 0.7 else "yellow" if score >= 0.4 else "red"
+    return f"[{color}]{bar}[/] {score:.2f}"
