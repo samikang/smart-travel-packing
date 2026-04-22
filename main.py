@@ -18,9 +18,7 @@ Usage:
 """
 
 import argparse
-import json
 import sys
-from dataclasses import asdict
 from datetime import date, timedelta
 
 from geocoder import get_location
@@ -31,6 +29,8 @@ from models import TripContext
 from display import display, plot_forecast
 import subprocess
 import sys
+import json
+from dataclasses import asdict
 import threading
 import base64
 import requests
@@ -79,13 +79,9 @@ def parse_args():
                         help="Baggage weight limit in kg for optimization (default: 20.0)")
     parser.add_argument("--optimize-items", nargs="+", metavar="ITEM",
                         help="Standalone optimization: provide item names directly "
-                             "(skips recommender; use with --weight-limit)")   
-<<<<<<< HEAD
-=======
-                             ''' 
+                             "(skips recommender; use with --weight-limit)")
     parser.add_argument("--json",    action="store_true",
                         help="Save forecasts, recommendations, and packing list as a JSON file")
->>>>>>> b4926dbfe9724509683b2e7639c45b0222f21e66
     parser.add_argument("--retrain", action="store_true",
                         help="Force retrain the recommendation model (respects --model)")
     return parser.parse_args()
@@ -177,18 +173,16 @@ def main():
     recommendations = [recommend_day(f, context, model_type=args.model) for f in forecasts]
     trip_packing    = build_trip_packing_list(recommendations)
 
+
     # ── Image recognition (optional — only when --images is passed) ─────────────
     wardrobe_items: list = []
+
     if args.images is not None and str(args.images).strip():
         outfit_paths = collect_image_paths_from_folder(args.images)
         if outfit_paths:
+            #analyse_outfits(outfit_paths, recommendations, context, args.vision)
             wardrobe_items = analyse_outfits(outfit_paths, recommendations, context, args.vision)
 
-<<<<<<< HEAD
-    
-    # ── Optimization ──────────────────────────────────────────────────────────
-    opt_result = None
-=======
     # ── JSON export ────────────────────────────────────────────────────────────
     if args.json:
         from pathlib import Path
@@ -212,7 +206,11 @@ def main():
         json_path  = Path(__file__).parent / f"output.json"
         json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
         print(f"\nJSON saved → {json_path}")
->>>>>>> b4926dbfe9724509683b2e7639c45b0222f21e66
+
+
+    
+    # ── Optimization ──────────────────────────────────────────────────────────
+    opt_result = None
 
     if getattr(args, "optimize_items", None):
         # Standalone mode: user supplied items directly via --optimize-items
