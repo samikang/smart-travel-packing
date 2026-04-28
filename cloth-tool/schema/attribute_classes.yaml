@@ -1,0 +1,34 @@
+# Attribute classification heads — used when training the multi-label classifier (Step 5)
+
+cloth_type:
+  num_classes: 10
+  names: [t_shirt, shirt, sweater, jacket, coat, down_jacket, pants, skirt, dress, vest]
+
+season_group:
+  num_classes: 3
+  names: [summer, spring_autumn, winter]
+
+material_group:
+  num_classes: 8
+  names: [cotton_like, knit, denim, wool_like, padded_down_like, leather_like, synthetic_sportswear, mixed_unknown]
+
+fold_state:
+  num_classes: 4
+  names: [unfolded, folded, partially_folded, compressed]
+
+weight_class:
+  num_classes: 3
+  names: [light, medium, heavy]
+
+pressed_size_class:
+  num_classes: 4
+  names: [pocket_size, compact, standard, bulky]
+
+folded_size_class:
+  num_classes: 4
+  names: [xs, s, m, l]
+  notes:
+    xs: "≤ ~15×20 cm — palm-sized"
+    s:  "~20×30 cm — book-sized"
+    m:  "~30×40 cm — A4-sized"
+    l:  "~40×50 cm+ — larger than A4"

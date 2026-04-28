@@ -1,0 +1,109 @@
+{
+  "schema_version": "1.0",
+  "task": "cloth_attribute_classification",
+  "description": "Multi-label attribute schema for clothing items. Each image crop contains exactly one garment.",
+  "attributes": {
+    "cloth_type": {
+      "type": "single_label",
+      "required": true,
+      "description": "Primary garment category",
+      "classes": [
+        { "id": 0,  "name": "t_shirt",      "note": "short-sleeve knit top, no collar or buttons" },
+        { "id": 1,  "name": "shirt",         "note": "woven fabric, usually collared and buttoned" },
+        { "id": 2,  "name": "sweater",       "note": "knit top, long sleeve, no zip/hood" },
+        { "id": 3,  "name": "jacket",        "note": "outer layer, hip-length, structured shell" },
+        { "id": 4,  "name": "coat",          "note": "outer layer, knee-length or longer" },
+        { "id": 5,  "name": "down_jacket",   "note": "quilted/puffer outer layer with fill" },
+        { "id": 6,  "name": "pants",         "note": "lower body, full-length legs" },
+        { "id": 7,  "name": "skirt",         "note": "lower body, no leg separation" },
+        { "id": 8,  "name": "dress",         "note": "one-piece top + skirt combined" },
+        { "id": 9,  "name": "vest",          "note": "sleeveless outer or mid layer" }
+      ]
+    },
+    "season_group": {
+      "type": "single_label",
+      "required": true,
+      "description": "Intended season suitability",
+      "classes": [
+        { "id": 0, "name": "summer",         "note": "thin, breathable; worn in heat" },
+        { "id": 1, "name": "spring_autumn",  "note": "medium weight; layering pieces" },
+        { "id": 2, "name": "winter",         "note": "heavy insulation; cold weather" }
+      ]
+    },
+    "material_group": {
+      "type": "single_label",
+      "required": true,
+      "description": "Dominant fabric/construction feel",
+      "classes": [
+        { "id": 0, "name": "cotton_like",          "note": "woven cotton, linen, chambray — soft and flat" },
+        { "id": 1, "name": "knit",                 "note": "knitted jersey, ribbed, waffle — stretchy" },
+        { "id": 2, "name": "denim",                "note": "denim twill — stiff woven" },
+        { "id": 3, "name": "wool_like",            "note": "wool, cashmere, fleece — warm and textured" },
+        { "id": 4, "name": "padded_down_like",     "note": "quilted or puffed shell with insulation fill" },
+        { "id": 5, "name": "leather_like",         "note": "genuine or synthetic leather/suede — smooth/shiny" },
+        { "id": 6, "name": "synthetic_sportswear", "note": "polyester/nylon athletic fabrics — slick surface" },
+        { "id": 7, "name": "mixed_unknown",        "note": "unclear or genuinely mixed construction" }
+      ]
+    },
+    "fold_state": {
+      "type": "single_label",
+      "required": true,
+      "description": "Physical folding/compression state at photo time",
+      "classes": [
+        { "id": 0, "name": "unfolded",          "note": "laid flat or hung; full shape visible" },
+        { "id": 1, "name": "folded",            "note": "neatly folded; layered rectangle visible" },
+        { "id": 2, "name": "partially_folded",  "note": "one or two folds; shape still partly visible" },
+        { "id": 3, "name": "compressed",        "note": "vacuum-packed or tightly rolled; volume minimized" }
+      ]
+    },
+    "weight_class": {
+      "type": "single_label",
+      "required": true,
+      "description": "Perceived fabric weight / thickness",
+      "classes": [
+        { "id": 0, "name": "light",   "note": "< ~200 gsm; sheer, thin, drapes easily" },
+        { "id": 1, "name": "medium",  "note": "~200–400 gsm; standard everyday fabrics" },
+        { "id": 2, "name": "heavy",   "note": "> ~400 gsm; dense, stiff, or heavily insulated" }
+      ]
+    },
+    "pressed_size_class": {
+      "type": "single_label",
+      "required": true,
+      "description": "Resulting bulk/volume when normally folded (not vacuum-compressed). Captures storage footprint independent of fabric weight.",
+      "classes": [
+        { "id": 0, "name": "pocket_size", "note": "stuffs into its own pocket or a fist-sized pouch; packable down, thin synthetics" },
+        { "id": 1, "name": "compact",     "note": "small flat stack fitting in a bag corner; thin tees, light shirts, leggings" },
+        { "id": 2, "name": "standard",    "note": "normal folded pile for that garment type; regular sweaters, chinos, casual jackets" },
+        { "id": 3, "name": "bulky",       "note": "large stack, hard to reduce further; heavy wool coats, thick denim, uncompressed heavy outerwear" }
+      ]
+    },
+    "folded_size_class": {
+      "type": "single_label",
+      "required": true,
+      "description": "Flat 2D footprint (length × width) when normally folded without pressing. Captures how much shelf/drawer area the garment occupies.",
+      "classes": [
+        { "id": 0, "name": "xs", "note": "palm-sized, ≤ ~15×20 cm; packable items, very small tees" },
+        { "id": 1, "name": "s",  "note": "book-sized, ~20×30 cm; thin tees, light shirts, leggings" },
+        { "id": 2, "name": "m",  "note": "A4-sized, ~30×40 cm; standard sweaters, regular pants, shirts" },
+        { "id": 3, "name": "l",  "note": "larger than A4, ~40×50 cm+; heavy coats, bulky outerwear, wide garments" }
+      ]
+    }
+  },
+  "label_format": {
+    "description": "Each labeled sample is one JSON object (one garment crop).",
+    "example": {
+      "image_id": "img_0042",
+      "crop_file": "crops/img_0042_crop_01.jpg",
+      "cloth_type": "down_jacket",
+      "season_group": "winter",
+      "material_group": "padded_down_like",
+      "fold_state": "folded",
+      "weight_class": "heavy",
+      "pressed_size_class": "standard",
+      "folded_size_class": "m",
+      "annotator": "",
+      "confidence": 1,
+      "notes": ""
+    }
+  }
+}
