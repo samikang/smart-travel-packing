@@ -4,9 +4,9 @@ Image Recognition — Wardrobe Outfit Analyser
 Analyses wardrobe photos against the trip weather forecast and produces
 packing advice. Supports three detection backends selectable via --vision:
 
-  yolo    (default) YOLOv8 local detection — offline, no API key required.
-                    Tries yolov8n-cls.pt (classification) first, then
-                    yolov8n.pt (object detection) as fallback.
+  yolo    (default) YOLO11 local detection — offline, no API key required.
+                    Tries yolo11n-cls.pt (classification) first, then
+                    yolo11n.pt (object detection) as fallback.
 
   google            Google Cloud Vision API — online, needs GOOGLE_VISION_API_KEY
                     env var. Returns label annotations ranked by confidence.
@@ -30,8 +30,8 @@ Environment variables
 
 Model files (place in project root)
 -------------------------------------
-    yolov8n-cls.pt          — YOLOv8 classification weights
-    yolov8n.pt              — YOLOv8 detection weights
+    yolo11n-cls.pt          — YOLO11 classification weights
+    yolo11n.pt              — YOLO11 detection weights
     (CLIP weights auto-downloaded by HuggingFace on first run, ~350MB)
 """
 
@@ -48,8 +48,10 @@ from typing import List, Optional, Tuple
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _HERE         = Path(__file__).parent
-YOLO_CLS_PATH = _HERE / "yolov8n-cls.pt"
-YOLO_DET_PATH = _HERE / "yolov8n.pt"
+YOLO_CLS_PATH = _HERE / "yolo11n-cls.pt"
+# Prefer custom local YOLO weights if present (requested: yolo26x.pt).
+# Falls back to the previous default if the file is missing.
+YOLO_DET_PATH = _HERE / "yolo26x.pt" if (_HERE / "yolo26x.pt").exists() else (_HERE / "yolo11n.pt")
 
 VALID_VISION_MODES = ("yolo", "google", "clip", "both")
 
@@ -60,6 +62,71 @@ IMAGE_FILE_SUFFIXES = {
 
 # CLIP: if best recommender-item similarity is below this, use generic vocab
 CLIP_RECOMMENDER_THRESHOLD = 0.20
+
+# ── 3D volume / weight estimation ─────────────────────────────────────────────
+
+SAM_CHECKPOINT = _HERE / "sam_vit_b_01ec64.pth"
+SAM_MODEL_TYPE = "vit_b"
+
+# Fabric areal density (g per cm² of fabric surface)
+# Used for weight = total_fabric_area × areal_density
+_FABRIC_AREAL_DENSITY: Dict[str, float] = {
+    "cotton":           0.025,   # jersey knit ~250 g/m²
+    "cotton/polyester": 0.020,
+    "polyester":        0.015,
+    "denim":            0.075,   # heavyweight denim ~750 g/m²
+    "cotton/denim":     0.065,
+    "fleece/wool":      0.040,
+    "wool blend":       0.045,
+    "wool/acrylic":     0.035,
+    "synthetic/down":   0.035,   # shell + down fill contribution
+    "leather/rubber":   0.150,
+    "leather/mesh":     0.080,
+    "nylon":            0.012,
+    "nylon/polyester":  0.018,
+    "cotton/wool":      0.035,
+    "wool/fleece":      0.038,
+    "unknown":          0.025,
+}
+
+# Per-garment packing parameters — (fold_factor, pack_thickness_cm, fabric_area_factor)
+#   fold_factor        : total_fabric_area / folded_footprint_area
+#                        (accounts for how many times each type is typically folded)
+#   pack_thickness_cm  : height of the folded garment stack when packed
+#   fabric_area_factor : total_fabric_area / front_projected_area
+#                        (front=1.0, front+back≈2.2, front+back+sleeves≈2.5-2.8)
+_GARMENT_PACK: List[tuple] = [
+    # keywords                                           fold  thick  area_f
+    (("heavy winter coat", "overcoat", "trench coat"),   14,   7.0,   2.8),
+    (("down jacket", "parka", "anorak"),                 20,   3.0,   2.5),
+    (("jacket", "blazer", "windbreaker",
+      "raincoat", "waterproof"),                         12,   4.0,   2.5),
+    (("sweater", "sweatshirt", "hoodie",
+      "cardigan", "pullover", "fleece"),                 12,   3.5,   2.5),
+    (("suit",),                                          10,   5.0,   3.0),
+    (("jeans", "denim"),                                 10,   4.5,   2.2),
+    (("trousers", "pants", "chinos"),                    12,   3.0,   2.2),
+    (("shorts", "miniskirt"),                            12,   1.2,   2.0),
+    (("skirt",),                                         10,   1.5,   2.0),
+    (("t-shirt", "tee", "polo", "jersey",
+      "tank", "blouse"),                                 14,   1.5,   2.2),
+    (("shirt",),                                         14,   1.8,   2.2),
+    (("dress",),                                         12,   2.0,   2.5),
+    (("boot",),                                           1,  14.0,   1.0),  # rigid
+    (("shoe", "sneaker", "loafer", "runner"),              1,  11.0,   1.0),
+    (("sock",),                                           3,   1.0,   2.0),
+    (("scarf",),                                          5,   0.8,   2.0),
+    (("glove",),                                          3,   1.5,   2.0),
+    (("hat", "cap"),                                      2,   8.0,   1.5),
+    (("umbrella",),                                       1,   5.0,   1.0),
+    (("backpack",),                                       2,  20.0,   1.5),
+]
+_DEFAULT_PACK = (10, 3.0, 2.2)   # fold_factor, pack_thickness_cm, fabric_area_factor
+
+# Lazy singletons for 3D models
+_MIDAS_MODEL     = None
+_MIDAS_PROCESSOR = None
+_SAM_PREDICTOR   = None
 
 # YOLO: clothing-related COCO / ImageNet class names
 _YOLO_CLOTHING_CLASSES = {
@@ -126,7 +193,7 @@ def _detect_yolo(image_path: Path) -> str:
                 labels   = [result.names[int(c)] for c in boxes.cls]
                 clothing = [l for l in labels if l.lower() in _YOLO_CLOTHING_CLASSES]
                 chosen   = clothing[0] if clothing else labels[0]
-                return f"{chosen} (YOLOv8-det)"
+                return f"{chosen} (yolo26x)"
         except Exception:
             pass
 
@@ -418,12 +485,249 @@ def _rule_based_properties(label: str) -> dict:
     return {"material": "unknown", "thickness": "medium", "weight_g": 400, "volume_l": 2.0}
 
 
+# ── 3D model loaders ──────────────────────────────────────────────────────────
+
+def _get_midas():
+    """Lazy-load Intel DPT-Hybrid-MiDaS for monocular depth estimation."""
+    global _MIDAS_MODEL, _MIDAS_PROCESSOR
+    if _MIDAS_MODEL is not None:
+        return _MIDAS_MODEL, _MIDAS_PROCESSOR
+    from transformers import DPTImageProcessor, DPTForDepthEstimation
+    _mid = "Intel/dpt-hybrid-midas"
+    print(f"  [MiDaS] Loading {_mid} (first time ~400 MB)...")
+    _MIDAS_PROCESSOR = DPTImageProcessor.from_pretrained(_mid)
+    _MIDAS_MODEL     = DPTForDepthEstimation.from_pretrained(_mid)
+    _MIDAS_MODEL.eval()
+    print("  [MiDaS] Ready.")
+    return _MIDAS_MODEL, _MIDAS_PROCESSOR
+
+
+def _get_sam():
+    """Lazy-load SAM ViT-B. Requires sam_vit_b_01ec64.pth (run download_sam.py)."""
+    global _SAM_PREDICTOR
+    if _SAM_PREDICTOR is not None:
+        return _SAM_PREDICTOR
+    try:
+        from segment_anything import sam_model_registry, SamPredictor
+    except ImportError:
+        raise ImportError(
+            "segment-anything not installed.\n"
+            "Run: pip install segment-anything\n"
+            "Then: python download_sam.py"
+        )
+    if not SAM_CHECKPOINT.exists():
+        raise FileNotFoundError(
+            f"SAM checkpoint missing: {SAM_CHECKPOINT}\nRun: python download_sam.py"
+        )
+    print("  [SAM] Loading ViT-B checkpoint (first time only)...")
+    sam = sam_model_registry[SAM_MODEL_TYPE](checkpoint=str(SAM_CHECKPOINT))
+    sam.eval()
+    _SAM_PREDICTOR = SamPredictor(sam)
+    print("  [SAM] Ready.")
+    return _SAM_PREDICTOR
+
+
+# ── 3D helper functions ───────────────────────────────────────────────────────
+
+def _get_depth_map(image_path: Path):
+    """Return a (H, W) numpy array of normalised depth (0=far, 1=near)."""
+    import numpy as np
+    import torch
+    from PIL import Image as PILImage
+
+    model, processor = _get_midas()
+    image  = PILImage.open(str(image_path)).convert("RGB")
+    orig_w, orig_h = image.size
+    inputs = processor(images=image, return_tensors="pt")
+    with torch.no_grad():
+        depth = model(**inputs).predicted_depth        # (1, H', W')
+    depth = torch.nn.functional.interpolate(
+        depth.unsqueeze(1), size=(orig_h, orig_w),
+        mode="bicubic", align_corners=False,
+    ).squeeze().numpy()
+    dmin, dmax = depth.min(), depth.max()
+    return (depth - dmin) / (dmax - dmin + 1e-6)      # 0–1
+
+
+def _get_garment_bbox(image_path: Path) -> List[float]:
+    """
+    Return [x1, y1, x2, y2] of the dominant garment.
+    Tries YOLO detection first; falls back to central 70% crop.
+    """
+    from PIL import Image as PILImage
+    img  = PILImage.open(str(image_path))
+    w, h = img.size
+    if YOLO_DET_PATH.exists():
+        try:
+            from ultralytics import YOLO
+            model  = YOLO(str(YOLO_DET_PATH))
+            result = model(str(image_path), verbose=False)[0]
+            boxes  = result.boxes
+            if boxes is not None and len(boxes):
+                areas  = [(b[2]-b[0])*(b[3]-b[1]) for b in boxes.xyxy]
+                best   = int(max(range(len(areas)), key=lambda i: areas[i]))
+                return [float(v) for v in boxes.xyxy[best]]
+        except Exception:
+            pass
+    px, py = int(w * 0.15), int(h * 0.15)
+    return [px, py, w - px, h - py]
+
+
+def _get_sam_mask(image_path: Path, bbox: List[float]):
+    """Run SAM with a bounding-box prompt; return the best boolean mask (H×W)."""
+    import numpy as np
+    from PIL import Image as PILImage
+
+    predictor = _get_sam()
+    image     = np.array(PILImage.open(str(image_path)).convert("RGB"))
+    predictor.set_image(image)
+    masks, scores, _ = predictor.predict(
+        box=np.array(bbox, dtype=float), multimask_output=True,
+    )
+    return masks[int(scores.argmax())]   # bool (H, W)
+
+
+def _get_pack_params(label: str) -> tuple:
+    """Return (fold_factor, pack_thickness_cm, fabric_area_factor) for a garment label."""
+    label_lower = label.lower()
+    for keywords, fold_factor, pack_thickness_cm, fabric_area_factor in _GARMENT_PACK:
+        if any(k in label_lower for k in keywords):
+            return fold_factor, pack_thickness_cm, fabric_area_factor
+    return _DEFAULT_PACK
+
+
+def _calc_volume_weight(area_px: int, image_size: tuple,
+                         label: str, material: str,
+                         depth_map=None) -> dict:
+    """
+    Physically-grounded packed volume and weight.
+
+    Physical model
+    --------------
+    front_area_cm²   = pixel_area × (cm/px)²
+                       calibration: garment ≈ 80 cm tall, fills 70 % of image height
+
+    total_fabric_cm² = front_area × fabric_area_factor
+                       accounts for back panel, sleeves, etc. (per garment type)
+
+    folded_footprint = total_fabric_cm² / fold_factor
+                       fold_factor encodes how many times each type is folded
+
+    packed_volume    = folded_footprint × pack_thickness_cm   → cm³ → L
+
+    weight           = total_fabric_cm² × areal_density       → g
+                       areal_density is g/cm² of fabric (material property)
+
+    MiDaS depth corrections (optional)
+    -----------------------------------
+    worn_correction  : high depth std → garment on 3D body → projected area
+                       overestimates true fabric area → scale down by up to 35 %
+    bulkiness_boost  : for thick garments (coats) with high depth range →
+                       slightly increase pack_thickness (capped at +30 %)
+    """
+    img_w, img_h = image_size
+    cm_per_px    = 80.0 / (img_h * 0.70)          # 80 cm garment = 70 % of frame
+    front_area   = area_px * (cm_per_px ** 2)
+
+    fold_factor, pack_thickness_cm, fabric_area_factor = _get_pack_params(label)
+    total_fabric  = front_area * fabric_area_factor
+
+    # ── Depth-based corrections ────────────────────────────────────────────
+    if depth_map is not None and depth_map.size > 0:
+        # Worn-body correction: body curvature inflates apparent projected area
+        # Flat garment: depth_std ≈ 0.05–0.10; worn on body: 0.15–0.25
+        d_std = float(depth_map.std())
+        worn_corr = max(0.65, 1.0 - max(0.0, (d_std - 0.10) / 0.15) * 0.35)
+        total_fabric *= worn_corr
+
+        # Bulkiness boost only for inherently thick garments (coats, down)
+        if pack_thickness_cm >= 4.0:
+            d_range   = float(depth_map.max() - depth_map.min())
+            bulk_boost = 1.0 + max(0.0, (d_range - 0.20) / 0.20) * 0.25
+            pack_thickness_cm = min(pack_thickness_cm * bulk_boost,
+                                    pack_thickness_cm * 1.30)
+
+    folded_footprint = total_fabric / fold_factor
+    volume_cm3       = folded_footprint * pack_thickness_cm
+    volume_l         = round(volume_cm3 / 1000.0, 2)
+
+    areal_density    = _FABRIC_AREAL_DENSITY.get(material, 0.025)
+    weight_g         = int(total_fabric * areal_density)
+
+    return {"weight_g": weight_g, "volume_l": volume_l}
+
+
+def _estimate_midas(image_path: Path, label: str,
+                     material: str) -> Optional[dict]:
+    """Volume/weight using MiDaS depth corrections + YOLO bbox area."""
+    try:
+        from PIL import Image as PILImage
+        depth        = _get_depth_map(image_path)
+        bbox         = _get_garment_bbox(image_path)
+        x1,y1,x2,y2 = [int(v) for v in bbox]
+        region_depth = depth[y1:y2, x1:x2]
+        area_px      = (x2 - x1) * (y2 - y1)
+        img          = PILImage.open(str(image_path))
+        r = _calc_volume_weight(area_px, img.size, label, material,
+                                depth_map=region_depth)
+        r["note"] = "MiDaS depth"
+        return r
+    except Exception as e:
+        print(f"  [MiDaS] skipped: {e}")
+        return None
+
+
+def _estimate_sam(image_path: Path, label: str,
+                   material: str) -> Optional[dict]:
+    """Volume/weight using SAM pixel-precise mask area (no depth correction)."""
+    try:
+        from PIL import Image as PILImage
+        bbox    = _get_garment_bbox(image_path)
+        mask    = _get_sam_mask(image_path, bbox)
+        area_px = int(mask.sum())
+        img     = PILImage.open(str(image_path))
+        r = _calc_volume_weight(area_px, img.size, label, material, depth_map=None)
+        r["note"] = "SAM mask area"
+        return r
+    except Exception as e:
+        print(f"  [SAM] skipped: {e}")
+        return None
+
+
+def _estimate_midas_sam(image_path: Path, label: str,
+                         material: str) -> Optional[dict]:
+    """Volume/weight using SAM precise mask area + MiDaS depth corrections."""
+    try:
+        from PIL import Image as PILImage
+        bbox          = _get_garment_bbox(image_path)
+        depth         = _get_depth_map(image_path)
+        mask          = _get_sam_mask(image_path, bbox)
+        area_px       = int(mask.sum())
+        depth_in_mask = depth[mask] if area_px > 0 else depth
+        img           = PILImage.open(str(image_path))
+        r = _calc_volume_weight(area_px, img.size, label, material,
+                                depth_map=depth_in_mask)
+        r["note"] = "MiDaS depth + SAM mask"
+        return r
+    except Exception as e:
+        print(f"  [MiDaS+SAM] skipped: {e}")
+        return None
+
+
 def _estimate_garment_properties(label: str, image_path: Path) -> dict:
     """
-    Estimate material, thickness, weight_g, volume_l for a detected garment.
-    Tries Gemini first (needs GEMINI_API_KEY); falls back to rule-based lookup.
+    Estimate material/thickness then run four volume+weight methods for comparison:
+      rule_based  — static lookup table (baseline, always available)
+      midas       — MiDaS depth + YOLO bbox
+      sam         — SAM precise mask + rule-based thickness
+      midas_sam   — SAM mask area × MiDaS depth range  (best accuracy)
+
+    Returns material, thickness, weight_g, volume_l (best available)
+    and an 'estimates' sub-dict with all four results for comparison.
     """
+    # ── Step 1: classify material + thickness ─────────────────────────────
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    mat_thick = None
     if api_key:
         try:
             import json as _json
@@ -433,24 +737,53 @@ def _estimate_garment_properties(label: str, image_path: Path) -> dict:
             img    = PILImage.open(str(image_path))
             prompt = (
                 f"This garment has been identified as: {label}.\n"
-                "Return ONLY a JSON object (no markdown, no explanation) with:\n"
-                '  "material": primary fabric (e.g. "cotton", "wool", "polyester", "denim", "down", "leather")\n'
+                "Return ONLY a JSON object (no markdown) with:\n"
+                '  "material": primary fabric\n'
                 '  "thickness": one of "thin", "medium", "thick"\n'
-                '  "weight_g": estimated packed weight in grams (integer)\n'
-                '  "volume_l": estimated packed volume in litres (one decimal)\n'
             )
-            response = client.models.generate_content(
+            resp = client.models.generate_content(
                 model="gemini-2.5-flash", contents=[prompt, img],
             )
-            text = response.text.strip()
+            text = resp.text.strip()
             if text.startswith("```"):
                 text = text.split("```")[1]
                 if text.startswith("json"):
                     text = text[4:]
-            return _json.loads(text)
+            mat_thick = _json.loads(text)
         except Exception:
             pass
-    return _rule_based_properties(label)
+    if mat_thick is None:
+        base = _rule_based_properties(label)
+        mat_thick = {"material": base["material"], "thickness": base["thickness"]}
+
+    material      = mat_thick.get("material", "unknown")
+    thickness_key = mat_thick.get("thickness", "medium")
+
+    # ── Step 2: rule-based baseline ────────────────────────────────────────
+    base = _rule_based_properties(label)
+    rule_est = {"weight_g": base["weight_g"], "volume_l": base["volume_l"],
+                "note": "lookup table"}
+
+    # ── Step 3: 3D estimates (label drives fold/thickness/area params) ─────
+    midas_est     = _estimate_midas(image_path, label, material)
+    sam_est       = _estimate_sam(image_path, label, material)
+    midas_sam_est = _estimate_midas_sam(image_path, label, material)
+
+    # ── Step 4: best available ─────────────────────────────────────────────
+    best = midas_sam_est or midas_est or sam_est or rule_est
+
+    return {
+        "material":  material,
+        "thickness": thickness_key,
+        "weight_g":  best["weight_g"],
+        "volume_l":  best["volume_l"],
+        "estimates": {
+            "rule_based": rule_est,
+            "midas":      midas_est,
+            "sam":        sam_est,
+            "midas_sam":  midas_sam_est,
+        },
+    }
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
@@ -534,6 +867,57 @@ def _print_footer(vision: str) -> None:
             print(msg)
 
 
+def _print_weight_volume_comparison(estimates: dict, material: str, thickness: str) -> None:
+    """Print a 4-row comparison table of weight/volume for all estimation methods."""
+    rows = [
+        ("rule_based", "Rule-based"),
+        ("midas",      "MiDaS"),
+        ("sam",        "SAM"),
+        ("midas_sam",  "MiDaS + SAM ★"),
+    ]
+    # Determine which is the best available
+    best_key = next(
+        (k for k in ("midas_sam", "midas", "sam", "rule_based") if estimates.get(k)),
+        "rule_based",
+    )
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich import box as rbox
+        console = Console()
+        tbl = Table(box=rbox.SIMPLE, show_header=True, header_style="bold yellow",
+                    title=f"  Weight & Volume  [{material} / {thickness}]",
+                    title_style="bold cyan")
+        tbl.add_column("Method",  style="cyan",  no_wrap=True, width=18)
+        tbl.add_column("Weight",  style="white", justify="right", width=10)
+        tbl.add_column("Volume",  style="white", justify="right", width=10)
+        tbl.add_column("Note",    style="dim")
+        for key, name in rows:
+            est = estimates.get(key)
+            if est:
+                hi = key == best_key
+                tbl.add_row(
+                    f"[bold green]{name}[/]" if hi else name,
+                    f"[bold green]{est['weight_g']} g[/]" if hi else f"{est['weight_g']} g",
+                    f"[bold green]{est['volume_l']:.2f} L[/]" if hi else f"{est['volume_l']:.2f} L",
+                    est.get("note", ""),
+                )
+            else:
+                tbl.add_row(name, "—", "—", "[dim]unavailable[/]")
+        console.print(tbl)
+    except ImportError:
+        print(f"\n  Weight & Volume  [{material} / {thickness}]")
+        print(f"  {'Method':<18} {'Weight':>9} {'Volume':>9}")
+        print(f"  {'-'*40}")
+        for key, name in rows:
+            est = estimates.get(key)
+            mark = " ←" if key == best_key else ""
+            if est:
+                print(f"  {name:<18} {est['weight_g']:>7} g {est['volume_l']:>7.2f} L{mark}")
+            else:
+                print(f"  {name:<18} {'—':>9} {'—':>9}")
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def collect_image_paths_from_folder(folder: str) -> List[str]:
@@ -605,15 +989,17 @@ def analyse_outfits(image_paths: List[str],
             # Use yolo label (most specific) for property estimation; fall back to first available
             primary_label = labels.get("yolo") or next(iter(labels.values()), path.stem)
             props = _estimate_garment_properties(primary_label, path)
+            _print_weight_volume_comparison(props["estimates"], props["material"], props["thickness"])
             results.append({
-                "image_name":     path.name,
-                "backends":       labels,
-                "detected_label": primary_label,
-                "material":       props["material"],
-                "thickness":      props["thickness"],
-                "weight_g":       props["weight_g"],
-                "volume_l":       props["volume_l"],
-                "advice":         advice,
+                "image_name":              path.name,
+                "backends":                labels,
+                "detected_label":          primary_label,
+                "material":                props["material"],
+                "thickness":               props["thickness"],
+                "weight_g":                props["weight_g"],
+                "volume_l":                props["volume_l"],
+                "weight_volume_estimates": props["estimates"],
+                "advice":                  advice,
             })
         else:
             label = _run_backend(vision, path, recommender_items)
@@ -622,14 +1008,16 @@ def analyse_outfits(image_paths: List[str],
                 adv = _rule_based_advice(label, recommendations)
             _print_single_result(path, vision, label, adv)
             props = _estimate_garment_properties(label, path)
+            _print_weight_volume_comparison(props["estimates"], props["material"], props["thickness"])
             results.append({
-                "image_name":     path.name,
-                "detected_label": label,
-                "material":       props["material"],
-                "thickness":      props["thickness"],
-                "weight_g":       props["weight_g"],
-                "volume_l":       props["volume_l"],
-                "advice":         adv,
+                "image_name":              path.name,
+                "detected_label":          label,
+                "material":                props["material"],
+                "thickness":               props["thickness"],
+                "weight_g":                props["weight_g"],
+                "volume_l":                props["volume_l"],
+                "weight_volume_estimates": props["estimates"],
+                "advice":                  adv,
             })
 
     _print_footer(vision)

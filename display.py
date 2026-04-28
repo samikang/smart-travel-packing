@@ -219,6 +219,7 @@ def display_rich(context, start_date, end_date, recommendations, trip_packing, n
     #call claude to get the suggestions
     '''
     if False:
+
         proc = subprocess.run(
         [
                                 "Claude",
@@ -242,14 +243,14 @@ def display_rich(context, start_date, end_date, recommendations, trip_packing, n
         msg = out or err or f"Claude playbook finished (exit code {proc.returncode})."
 
     else:
-
-        from google import genai
-        from google.genai import types
-        import PIL.Image                                                                   
-        
-                                
-        #img = PIL.Image.open("img/IMG_1.jpg")
-        images = [PIL.Image.open(f"img/IMG_{i}.jpg") for i in range(3)]
+        if False:
+            from google import genai
+            from google.genai import types
+            import PIL.Image                                                                   
+            
+                                    
+            #img = PIL.Image.open("img/IMG_1.jpg")
+            images = [PIL.Image.open(f"img/IMG_{i}.jpg") for i in range(3)]
 
         response = ""#client.models.generate_content(                                         
             #model="gemini-2.5-flash",
