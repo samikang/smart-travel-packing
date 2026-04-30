@@ -245,6 +245,15 @@ def seed_kg() -> None:
                     )
 
         print("[KG Seed] ✅ Knowledge graph seeded successfully.")
+        # TEMP – verify Neo4j is alive
+        from services.kg_client import _get_driver
+        d = _get_driver()
+        print("[DIAG] Neo4j driver:", d)
+        if d:
+            with d.session() as s:
+                res = s.run("MATCH (g:GarmentType) RETURN count(g) AS cnt")
+                print("[DIAG] GarmentType nodes:", res.single()["cnt"])
+        # END TEMP
 
     except Exception as e:
         print(f"[KG Seed] Warning: {e} — app will continue with fallback data.")
@@ -315,7 +324,7 @@ def assess_wardrobe_suitability(
     from services.kg_client import _get_driver
     print("[DIAGNOSTIC] Neo4j driver:", _get_driver())
     # -- end diagnostic --
-    
+
     # Determine if waterproof outer layer is needed
     max_rain = max((f.precipitation_mm for f in forecasts), default=0.0)
     needs_waterproof = max_rain > 5.0
@@ -332,7 +341,7 @@ def assess_wardrobe_suitability(
 
         # Fetch base CLO from Neo4j (or local fallback)
         base_clo   = kg_client.get_ashrae_base_clo(label)
-
+        print(f"[DIAG] CLO for {label}: {base_clo} (KG)" if _get_driver() else "[DIAG] CLO for {label}: {base_clo} (FALLBACK)")
         # Apply thickness multiplier from CV output
         thickness  = item_data.get("thickness", "medium")
         multiplier = {"thin": 0.7, "medium": 1.0, "thick": 1.3}.get(thickness, 1.0)
