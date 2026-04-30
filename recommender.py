@@ -504,3 +504,17 @@ def calculate_needed_quantity(
         elif n <= 7: return 2
         else: return min(3, max(2, n // 4))
     return 1
+
+def get_train_test_split(test_size=0.2, seed=42):
+    """Return a train / test split of the synthetic data.
+
+    Args:
+        test_size: Fraction of data to use for testing.
+        seed: Random seed for reproducibility.
+
+    Returns:
+        Tuple (X_train, X_test, Y_train, Y_test).
+    """
+    X, Y = _generate_training_data(n_samples=15_000, seed=seed)
+    from sklearn.model_selection import train_test_split
+    return train_test_split(X, Y, test_size=test_size, random_state=seed)
