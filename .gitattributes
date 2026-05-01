@@ -1,0 +1,5 @@
+# Handle line endings automatically for all text files
+* text=auto
+
+# Treat YOLO weights as binary and manage via Git LFS
+# *.pt filter=lfs diff=lfs merge=lfs -text

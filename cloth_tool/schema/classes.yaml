@@ -1,0 +1,7 @@
+# YOLO-compatible class list for garment detection (Step 3 — auto-crop)
+# Object detector only needs to find "garment" bounding boxes.
+# Attribute labels (type, season, material, fold, weight) are added in Step 4.
+
+nc: 1
+names:
+  - garment
