@@ -380,8 +380,16 @@ def _fallback_extraction(chat_history: List[dict], user_input: str) -> TripSlots
         except ValueError:
             pass
 
-    # Destination
-    cap_words = [w for w in user_input.split() if w and w[0].isupper()]
+    # Destination – pick capitalised words but ignore common English pronouns
+    IGNORE_WORDS = {
+        "I", "I'm", "Ive", "I'll", "I'd", "We", "We're", "Weve", "We'll",
+        "You", "You're", "Youve", "You'll", "He", "She", "It", "They",
+        "Me", "Myself", "Him", "Her", "Us", "Them", "My", "Our", "Your",
+    }
+    cap_words = [
+        w for w in user_input.split()
+        if w and w[0].isupper() and w.strip(",.?!") not in IGNORE_WORDS
+    ]
     if cap_words:
         slots.destination = " ".join(cap_words)
 

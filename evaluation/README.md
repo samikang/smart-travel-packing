@@ -9,7 +9,7 @@ project documentation.
 ## Purpose in the Project
 
 The evaluation scripts are the primary source of empirical evidence for
-**Section 6 (Evaluation)** of the project report. Each script implements
+**Section (Evaluation)** of the project report. Each script implements
 one of the evaluation methodologies recommended by the course:
 
 - **Offline Ranking Metrics** (Precision@K, Accuracy, F1)
@@ -25,12 +25,12 @@ user surveys; those results are summarised directly in the report.
 From the **project root** (where `streamlit_app.py` lives), execute each
 script individually:
 
-python evaluation/eval_weather.py
-python evaluation/eval_recommender.py
-python evaluation/eval_slots.py
-python evaluation/eval_kg.py
-python evaluation/eval_optimizer.py
-
+    python evaluation/eval_weather.py
+    python evaluation/eval_recommender.py
+    python evaluation/eval_slots.py
+    python evaluation/eval_slots_llm.py
+    python evaluation/eval_kg.py
+    python evaluation/eval_optimizer.py
 
 Each script prints its results to the console. No additional arguments or
 API keys are required—they use synthetic data or pre‑defined test sets.
@@ -42,6 +42,7 @@ API keys are required—they use synthetic data or pre‑defined test sets.
 | `eval_weather.py` | `historical_forecast.py` | Historical Simulation | Generates synthetic temperature series, withholds one year, compares Theil‑Sen vs OLS RMSE | `Theil‑Sen RMSE: 0.192, OLS RMSE: 0.435, Reduction: 55.9%` | Section 6, Weather rows |
 | `eval_recommender.py` | `recommender.py` | Offline Ranking | Trains KNN on 400 synthetic samples, tests on 100, computes mean accuracy and F1 | `Mean accuracy: 0.912, Mean F1: 0.886` | Section 6, Recommender row |
 | `eval_slots.py` | `slot_detection.py` (fallback) | Offline Ranking (Precision@1) | Runs fallback extraction on 3 known utterances, counts correct slot values | `Precision@1: 0.94 (9/10)` | Section 6, Slot Detection row |
+| `eval_slots_llm.py` | `slot_detection.py` (LLM + SBERT) | Offline Ranking (Precision@1) | Calls the full Groq + SBERT slot‑detection pipeline on known utterances, counts correct slot values | `Precision@1: 1.00 (10/10)` | Section 6, Slot Detection row |
 | `eval_kg.py` | `kg_rules.py` (fallback) | Within‑subject (keyword match) | Checks 5 temperature bands for expected keywords in layering advice | `Accuracy: 5/5` | Section 6, KG/Layering rows |
 | `eval_optimizer.py` | `packing_optimizer.py` (knapsack) | Historical Simulation (constraint) | Generates 50 random trip configurations, verifies weight limit compliance | `Success rate: 98.0% (49/50)` | Section 6, Optimizer row |
 
@@ -72,6 +73,17 @@ API keys are required—they use synthetic data or pre‑defined test sets.
 - **Why it’s useful:** Quantifies the reliability of the slot‑detection fallback,
   which is critical for system uptime when the LLM is unavailable.
 - **Output:** Precision@1 as a decimal (e.g., 0.94).
+
+### `eval_slots_llm.py`
+
+- **What it does:** Calls the full `extract_slots()` function – the same
+  LangChain + Groq + SBERT pipeline used in the live Streamlit app – on a
+  set of known user utterances. Compares every extracted slot against the
+  expected value.
+- **Why it’s useful:** Provides a real‑world Precision@1 measurement for
+  the primary AI‑powered slot‑detection path (not the fallback). This is
+  the number that reflects the actual user experience in the GUI.
+- **Output:** Precision@1 as a decimal (e.g., 1.00 for 10/10).
 
 ### `eval_kg.py`
 

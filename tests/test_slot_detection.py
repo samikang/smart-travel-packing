@@ -40,7 +40,7 @@ def test_fallback_extracts_purpose():
 
 def test_fallback_missing_slots():
     """Should list slots that are still missing after extraction."""
-    result = _fallback_extraction([], "I want to visit Tokyo")
+    result = _fallback_extraction([], "I want to see Tokyo")
     assert "start_date" in result.missing_slots
     assert "end_date" in result.missing_slots
     assert "purpose" in result.missing_slots
