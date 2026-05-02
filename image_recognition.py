@@ -19,12 +19,12 @@ packing advice. Supports three detection backends selectable via --vision:
   both              Runs all three backends on every image and displays each
                     result in a side-by-side comparison table.
 
-  cloth-tool        Trained EfficientNet-B0 multi-task classifier (cloth-tool
+  cloth_tool        Trained EfficientNet-B0 multi-task classifier (cloth-tool
                     package). Predicts 7 attributes (cloth_type, season_group,
                     material_group, fold_state, weight_class, folded_size_class,
                     pressed_size_class) plus approx_weight_g and approx_volume_L
                     regression outputs — skips MiDaS/SAM entirely.
-                    Model: cloth_tool/runs/exp2/best.pt
+                    Model: cloth-tool/runs/exp2/best.pt
 
 After detection, the garment label is passed to Gemini (optional, needs
 GEMINI_API_KEY) for narrative packing advice. Falls back to rule-based
@@ -58,11 +58,9 @@ _HERE         = Path(__file__).parent
 YOLO_CLS_PATH = _HERE / "yolo11n-cls.pt"
 # Prefer custom local YOLO weights if present (requested: yolo26x.pt).
 # Falls back to the previous default if the file is missing.
-#YOLO_DET_PATH = _HERE / "yolo26n.pt" if (_HERE / "yolo26x.pt").exists() else (_HERE / "yolo11n.pt")
-# Use YOLO26n — lightweight (~9MB), fast on CPU, ideal for HF Spaces demo.
-YOLO_DET_PATH = _HERE / "yolo26n.pt"
+YOLO_DET_PATH = _HERE / "yolo26x.pt" if (_HERE / "yolo26x.pt").exists() else (_HERE / "yolo11n.pt")
 
-VALID_VISION_MODES = ("yolo", "google", "clip", "both", "cloth-tool")
+VALID_VISION_MODES = ("yolo", "google", "clip", "both", "cloth_tool")
 
 # Raster files accepted when scanning a wardrobe folder (--images)
 IMAGE_FILE_SUFFIXES = {
@@ -74,8 +72,8 @@ CLIP_RECOMMENDER_THRESHOLD = 0.20
 
 # ── cloth-tool integration ────────────────────────────────────────────────────
 
-# CLOTH_TOOL_SRC   = _HERE / "cloth_tool" / "src"
-CLOTH_TOOL_MODEL = _HERE / "cloth_tool" / "runs" / "exp2" / "best.pt"
+CLOTH_TOOL_SRC   = _HERE / "cloth-tool" / "src"
+CLOTH_TOOL_MODEL = _HERE / "cloth-tool" / "runs" / "exp2" / "best.pt"
 
 _CLOTH_TOOL_MODEL_SINGLETON   = None
 _CLOTH_TOOL_TRANSFORM_SINGLETON = None
@@ -435,10 +433,10 @@ def _get_cloth_tool_model():
                 _CLOTH_TOOL_TRANSFORM_SINGLETON,
                 _CLOTH_TOOL_DEVICE_SINGLETON)
 
-    # import sys
-    # src = str(CLOTH_TOOL_SRC)
-    # if src not in sys.path:
-    #    sys.path.insert(0, src)
+    import sys
+    src = str(CLOTH_TOOL_SRC)
+    if src not in sys.path:
+        sys.path.insert(0, src)
 
     from cloth_tool.model import ClothClassifier
     from cloth_tool.dataset import get_transforms
@@ -473,7 +471,7 @@ def _detect_cloth_tool(image_path: Path) -> dict:
         print(f"  [cloth-tool] Model not found: {CLOTH_TOOL_MODEL}")
         return {}
     try:
-        model, transform, device = _get_cloth_tool_model()   # adds cloth_tool/src to sys.path
+        model, transform, device = _get_cloth_tool_model()   # adds cloth-tool/src to sys.path
         from cloth_tool.predict import predict_image
         return predict_image(model, image_path, device, transform)
     except Exception as e:
@@ -1152,7 +1150,7 @@ def analyse_outfits(image_paths: List[str],
     image_paths    : paths to wardrobe photos (jpg/png)
     recommendations: per-day clothing recommendations from recommender.py
     context        : TripContext (city, country, purpose)
-    vision         : "yolo" | "google" | "clip" | "both" | "cloth-tool"  (default: "yolo")
+    vision         : "yolo" | "google" | "clip" | "both" | "cloth_tool"  (default: "yolo")
     depth          : "midas_sam" | "midas" | "sam" | "rule_based"        (default: "midas_sam")
 
     Returns
@@ -1182,7 +1180,7 @@ def analyse_outfits(image_paths: List[str],
             print(f"  [!] File not found: {path}")
             continue
 
-        if vision == "cloth-tool":
+        if True: #vision == "cloth_tool":
             raw     = _detect_cloth_tool(path)
             label   = _cloth_tool_readable_label(raw) if raw else _filename_fallback(path)
             mat_key = raw.get("material_group", "mixed_unknown")
@@ -1261,7 +1259,7 @@ def _run_backend(backend: str, image_path: Path,
         return _detect_google_vision(image_path)
     if backend == "clip":
         return _detect_clip(image_path, recommender_items)
-    if backend == "cloth-tool":
+    if backend in ("cloth_tool", "cloth-tool"):
         raw = _detect_cloth_tool(image_path)
         return _cloth_tool_readable_label(raw) if raw else _filename_fallback(image_path)
     return _filename_fallback(image_path, note=f"unknown backend '{backend}'")
