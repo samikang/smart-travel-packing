@@ -10,11 +10,12 @@ plotly==6.7.0              # Interactive charts for CLO scores & evaluation
 # CV & Weather 
 # ============================
 ultralytics==8.4.37        # YOLOv11/YOLO26 segmentation models
-# --- HF Spaces Optimization: Install CPU versions only ---
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.11.0+cpu               # PyTorch deep learning framework
-torchvision==0.26.0+cpu        # Image transforms & pretrained CV utilities
-# ---------------------------------------------------------
+# PyTorch: use PyPI wheels (macOS/Windows + Linux). The +cpu builds from
+# download.pytorch.org do not resolve on macOS ARM, which breaks `pip install -r`.
+# Linux CPU-only (e.g. Hugging Face Spaces): install torch first with:
+#   pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cpu
+torch==2.11.0                  # PyTorch deep learning framework
+torchvision==0.26.0            # Image transforms & pretrained CV utilities
 opencv-python-headless==4.13.0.92  # Image processing (headless for HF Spaces)
 requests==2.33.1           # Fetch APIs (e.g., weather data)
 pillow==12.2.0             # Image manipulation (resize, crop, augment)

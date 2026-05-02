@@ -18,7 +18,7 @@ A CLI tool that recommends what to wear and pack for a trip based on weather for
 pip install -r requirements.txt
 ```
 
-**Requirements:** Python 3.10+
+**Requirements:** Python 3.14+
 
 ## Usage
 
