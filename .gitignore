@@ -230,7 +230,6 @@ Thumbs.db
 
 
 # Others
-runs/
 backup/
 data/local_uploads/
 data/local_fallback_db/
